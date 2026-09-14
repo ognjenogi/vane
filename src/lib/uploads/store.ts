@@ -32,7 +32,8 @@ class UploadStore {
             const file = UploadManager.getFile(fileId)
 
             if (!file) {
-                throw new Error(`File with ID ${fileId} not found`);
+                console.warn(`File with ID ${fileId} not found, skipping.`);
+                return;
             }
 
             const chunks = UploadManager.getFileChunks(fileId);
@@ -103,7 +104,8 @@ class UploadStore {
             const file = UploadManager.getFile(fileId)
 
             if (!file) {
-                throw new Error(`File with ID ${fileId} not found`);
+                console.warn(`File with ID ${fileId} not found in UploadManager, skipping.`);
+                return;
             }
 
             const chunks = UploadManager.getFileChunks(fileId);

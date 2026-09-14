@@ -1,4 +1,4 @@
-import { Clock, Edit, Share, Trash, FileText, FileDown } from 'lucide-react';
+import { Clock, Edit, Share, Trash, FileText, FileDown, FolderKanban } from 'lucide-react';
 import { Message } from './ChatWindow';
 import { useEffect, useState, Fragment } from 'react';
 import { formatTimeDifference } from '@/lib/utils';
@@ -200,7 +200,22 @@ const Navbar = () => {
   const [title, setTitle] = useState<string>('');
   const [timeAgo, setTimeAgo] = useState<string>('');
 
-  const { sections, chatId } = useChat();
+  const [projectName, setProjectName] = useState<string | null>(null);
+
+  const { sections, chatId, projectId } = useChat();
+
+  useEffect(() => {
+    if (projectId) {
+      fetch(`/api/projects/${projectId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.project?.name) setProjectName(data.project.name);
+        })
+        .catch(() => {});
+    } else {
+      setProjectName(null);
+    }
+  }, [projectId]);
 
   useEffect(() => {
     if (sections.length > 0 && sections[0].message) {
@@ -235,7 +250,7 @@ const Navbar = () => {
 
   return (
     <div className="sticky -mx-4 lg:mx-0 top-0 z-40 bg-light-primary/95 dark:bg-dark-primary/95 backdrop-blur-sm border-b border-light-200/50 dark:border-dark-200/30">
-      <div className="px-4 lg:px-6 py-4">
+      <div className="px-4 lg:px-6 py-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center min-w-0">
             <a
@@ -250,7 +265,19 @@ const Navbar = () => {
             </div>
           </div>
 
-          <div className="flex-1 mx-4 min-w-0">
+          <div className="flex-1 mx-4 min-w-0 flex flex-col items-center justify-center">
+            {projectId && (
+              <a
+                href={`/project/${projectId}`}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 mb-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20 transition-colors"
+                title="View Project Workspace"
+              >
+                <FolderKanban size={12} />
+                <span className="truncate max-w-[150px]">
+                  {projectName || 'Project Workspace'}
+                </span>
+              </a>
+            )}
             <h1 className="text-center text-sm font-medium text-black/80 dark:text-white/90 truncate">
               {title || 'New Conversation'}
             </h1>

@@ -76,11 +76,21 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
       })
       .filter((r) => r !== undefined);
 
+    const cappedResults = filteredSearchResults.slice(0, 6).map((r) => {
+      if (r && r.content && r.content.length > 3500) {
+        return {
+          ...r,
+          content: r.content.slice(0, 3500) + '... [truncated for context limit]',
+        };
+      }
+      return r;
+    });
+
     if (researchBlock && researchBlock.type === 'research') {
       researchBlock.data.subSteps.push({
         id: crypto.randomUUID(),
         type: 'upload_search_results',
-        results: filteredSearchResults,
+        results: cappedResults,
       });
 
       additionalConfig.session.updateBlock(additionalConfig.researchBlockId, [
@@ -94,7 +104,7 @@ const uploadsSearchAction: ResearchAction<typeof schema> = {
 
     return {
       type: 'search_results',
-      results: filteredSearchResults,
+      results: cappedResults,
     };
   },
 };

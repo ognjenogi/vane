@@ -7,7 +7,7 @@ import { ChatTurnMessage } from '@/lib/types';
 import { SearchSources } from '@/lib/agents/search/types';
 import db from '@/lib/db';
 import { eq } from 'drizzle-orm';
-import { chats } from '@/lib/db/schema';
+import { chats, projects } from '@/lib/db/schema';
 import UploadManager from '@/lib/uploads/manager';
 
 export const runtime = 'nodejs';
@@ -45,6 +45,7 @@ const bodySchema = z.object({
   chatModel: chatModelSchema,
   embeddingModel: embeddingModelSchema,
   systemInstructions: z.string().nullable().optional().default(''),
+  projectId: z.string().nullable().optional(),
 });
 
 type Body = z.infer<typeof bodySchema>;
@@ -73,6 +74,7 @@ const ensureChatExists = async (input: {
   sources: SearchSources[];
   query: string;
   fileIds: string[];
+  projectId?: string | null;
 }) => {
   try {
     const exists = await db.query.chats
@@ -87,6 +89,7 @@ const ensureChatExists = async (input: {
         createdAt: new Date().toISOString(),
         sources: input.sources,
         title: input.query,
+        projectId: input.projectId || null,
         files: input.fileIds.map((id) => {
           return {
             fileId: id,
@@ -210,6 +213,42 @@ export const POST = async (req: Request) => {
       }
     });
 
+    let projectSystemInstructions = '';
+    let projectFileIds: string[] = [];
+    let effectiveProjectId = body.projectId || null;
+
+    if (!effectiveProjectId && body.message.chatId) {
+      const existingChat = await db.query.chats.findFirst({
+        where: eq(chats.id, body.message.chatId),
+      });
+      if (existingChat?.projectId) {
+        effectiveProjectId = existingChat.projectId;
+      }
+    }
+
+    if (effectiveProjectId) {
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, effectiveProjectId),
+      });
+      if (project) {
+        if (project.systemInstructions?.trim()) {
+          projectSystemInstructions = project.systemInstructions.trim();
+        }
+        if (project.files && Array.isArray(project.files)) {
+          projectFileIds = project.files.map((f) => f.fileId).filter(Boolean);
+        }
+      }
+    }
+
+    const combinedSystemInstructions =
+      [projectSystemInstructions, body.systemInstructions]
+        .filter(Boolean)
+        .join('\n\n') || 'None';
+
+    const combinedFileIds = Array.from(
+      new Set([...projectFileIds, ...(body.files || [])]),
+    );
+
     agent.searchAsync(session, {
       chatHistory: history,
       followUp: message.content,
@@ -220,16 +259,17 @@ export const POST = async (req: Request) => {
         embedding: embedding,
         sources: body.sources as SearchSources[],
         mode: body.optimizationMode,
-        fileIds: body.files,
-        systemInstructions: body.systemInstructions || 'None',
+        fileIds: combinedFileIds,
+        systemInstructions: combinedSystemInstructions,
       },
     });
 
     ensureChatExists({
       id: body.message.chatId,
       sources: body.sources as SearchSources[],
-      fileIds: body.files,
+      fileIds: combinedFileIds,
       query: body.message.content,
+      projectId: effectiveProjectId,
     });
 
     req.signal.addEventListener('abort', () => {

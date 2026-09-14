@@ -272,7 +272,18 @@ fs.readdirSync(migrationsFolder)
         // Execute each statement separately
         statements.forEach((stmt) => {
           if (stmt.trim()) {
-            db.exec(stmt);
+            try {
+              db.exec(stmt);
+            } catch (stmtErr: any) {
+              if (
+                stmtErr?.message &&
+                stmtErr.message.includes('duplicate column name')
+              ) {
+                console.log(`Column already exists, skipping: ${stmt.trim()}`);
+              } else {
+                throw stmtErr;
+              }
+            }
           }
         });
       }

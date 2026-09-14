@@ -69,6 +69,28 @@ class UploadManager {
         return recordedFiles.find(f => f.id === fileId) || null;
     }
 
+    static deleteFile(fileId: string): boolean {
+        try {
+            const recordedFiles = this.getRecordedFiles();
+            const file = recordedFiles.find(f => f.id === fileId);
+            if (!file) return false;
+
+            if (fs.existsSync(file.filePath)) {
+                fs.unlinkSync(file.filePath);
+            }
+            if (fs.existsSync(file.contentPath)) {
+                fs.unlinkSync(file.contentPath);
+            }
+
+            const updated = recordedFiles.filter(f => f.id !== fileId);
+            fs.writeFileSync(UploadManager.uploadedFilesRecordPath, JSON.stringify({ files: updated }, null, 2));
+            return true;
+        } catch (err) {
+            console.error(`Error deleting file ${fileId}:`, err);
+            return false;
+        }
+    }
+
     static getFileChunks(fileId: string): { content: string; embedding: number[] }[] {
         try {
             const recordedFile = this.getFile(fileId);

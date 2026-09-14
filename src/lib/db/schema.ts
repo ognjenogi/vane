@@ -18,10 +18,27 @@ export const messages = sqliteTable('messages', {
   ),
 });
 
-interface DBFile {
+export interface DBFile {
   name: string;
   fileId: string;
 }
+
+export const projects = sqliteTable('projects', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description').default(''),
+  systemInstructions: text('systemInstructions').default(''),
+  defaultSources: text('defaultSources', {
+    mode: 'json',
+  })
+    .$type<SearchSources[]>()
+    .default(sql`'["web"]'`),
+  files: text('files', { mode: 'json' })
+    .$type<DBFile[]>()
+    .default(sql`'[]'`),
+  createdAt: text('createdAt').notNull(),
+  updatedAt: text('updatedAt').notNull(),
+});
 
 export const chats = sqliteTable('chats', {
   id: text('id').primaryKey(),
@@ -35,4 +52,5 @@ export const chats = sqliteTable('chats', {
   files: text('files', { mode: 'json' })
     .$type<DBFile[]>()
     .default(sql`'[]'`),
+  projectId: text('projectId'),
 });

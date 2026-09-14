@@ -59,6 +59,8 @@ type ChatContext = {
   rewrite: (messageId: string) => void;
   setChatModelProvider: (provider: ChatModelProvider) => void;
   setEmbeddingModelProvider: (provider: EmbeddingModelProvider) => void;
+  projectId: string | null;
+  setProjectId: (id: string | null) => void;
 };
 
 export interface File {
@@ -180,6 +182,7 @@ const loadMessages = async (
   setNotFound: (notFound: boolean) => void,
   setFiles: (files: File[]) => void,
   setFileIds: (fileIds: string[]) => void,
+  setProjectId?: (id: string | null) => void,
 ) => {
   const res = await fetch(`/api/chats/${chatId}`, {
     method: 'GET',
@@ -233,6 +236,10 @@ const loadMessages = async (
   setFiles(files);
   setFileIds(files.map((file: File) => file.fileId));
 
+  if (data.chat?.projectId && setProjectId) {
+    setProjectId(data.chat.projectId);
+  }
+
   chatHistory.current = history;
   setSources(data.chat.sources);
   setIsMessagesLoaded(true);
@@ -265,6 +272,8 @@ export const chatContext = createContext<ChatContext>({
   setChatModelProvider: () => {},
   setEmbeddingModelProvider: () => {},
   setResearchEnded: () => {},
+  projectId: null,
+  setProjectId: () => {},
 });
 
 export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
@@ -272,6 +281,10 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
   const searchParams = useSearchParams();
   const initialMessage = searchParams.get('q');
+  const projectIdParam = searchParams.get('projectId');
+  const [projectId, setProjectId] = useState<string | null>(
+    projectIdParam || null,
+  );
 
   const [chatId, setChatId] = useState<string | undefined>(params.chatId);
   const [newChatCreated, setNewChatCreated] = useState(false);
@@ -499,6 +512,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
         setNotFound,
         setFiles,
         setFileIds,
+        setProjectId,
       );
     } else if (!chatId) {
       setNewChatCreated(true);
@@ -773,6 +787,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
           providerId: embeddingModelProvider.providerId,
         },
         systemInstructions: localStorage.getItem('systemInstructions'),
+        projectId: projectId || undefined,
       }),
     });
 
@@ -834,6 +849,8 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
         setEmbeddingModelProvider,
         researchEnded,
         setResearchEnded,
+        projectId,
+        setProjectId,
       }}
     >
       {children}
