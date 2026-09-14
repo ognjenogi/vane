@@ -52,140 +52,203 @@ class SearchAgent {
         .execute();
     }
 
-    const classification = await classify({
-      chatHistory: input.chatHistory,
-      enabledSources: input.config.sources,
-      query: input.followUp,
-      llm: input.config.llm,
-    });
-
-    const widgetPromise = WidgetExecutor.executeAll({
-      classification,
-      chatHistory: input.chatHistory,
-      followUp: input.followUp,
-      llm: input.config.llm,
-    }).then((widgetOutputs) => {
-      widgetOutputs.forEach((o) => {
-        session.emitBlock({
-          id: crypto.randomUUID(),
-          type: 'widget',
-          data: {
-            widgetType: o.type,
-            params: o.data,
-          },
+    try {
+      let classification;
+      try {
+        classification = await classify({
+          chatHistory: input.chatHistory,
+          enabledSources: input.config.sources,
+          query: input.followUp,
+          llm: input.config.llm,
         });
-      });
-      return widgetOutputs;
-    });
+      } catch (err) {
+        console.warn('Classification failed, using defaults:', err);
+        classification = {
+          classification: {
+            skipSearch: false,
+            personalSearch: false,
+            academicSearch: false,
+            discussionSearch: false,
+            showWeatherWidget: false,
+            showStockWidget: false,
+            showCalculationWidget: false,
+          },
+          standaloneFollowUp: input.followUp,
+        };
+      }
 
-    let searchPromise: Promise<ResearcherOutput> | null = null;
-
-    if (!classification.classification.skipSearch) {
-      const researcher = new Researcher();
-      searchPromise = researcher.research(session, {
+      const widgetPromise = WidgetExecutor.executeAll({
+        classification,
         chatHistory: input.chatHistory,
         followUp: input.followUp,
-        classification: classification,
-        config: input.config,
-      });
-    }
-
-    const [widgetOutputs, searchResults] = await Promise.all([
-      widgetPromise,
-      searchPromise,
-    ]);
-
-    session.emit('data', {
-      type: 'researchComplete',
-    });
-
-    let finalContext =
-      '<Query to be answered without searching; Search not made>';
-
-    if (searchResults) {
-      finalContext = searchResults?.searchFindings
-        .map(
-          (f, index) =>
-            `<result index=${index + 1} title=${f.metadata.title}>${f.content}</result>`,
-        )
-        .join('\n');
-    }
-
-    const widgetContext = widgetOutputs
-      .map((o) => {
-        return `<result>${o.llmContext}</result>`;
+        llm: input.config.llm,
       })
-      .join('\n-------------\n');
+        .then((widgetOutputs) => {
+          widgetOutputs.forEach((o) => {
+            session.emitBlock({
+              id: crypto.randomUUID(),
+              type: 'widget',
+              data: {
+                widgetType: o.type,
+                params: o.data,
+              },
+            });
+          });
+          return widgetOutputs;
+        })
+        .catch((err) => {
+          console.error('Widget execution failed:', err);
+          return [];
+        });
 
-    const finalContextWithWidgets = `<search_results note="These are the search results and assistant can cite these">\n${finalContext}\n</search_results>\n<widgets_result noteForAssistant="Its output is already showed to the user, assistant can use this information to answer the query but do not CITE this as a souce">\n${widgetContext}\n</widgets_result>`;
+      let searchPromise: Promise<ResearcherOutput | null> = Promise.resolve(null);
 
-    const writerPrompt = getWriterPrompt(
-      finalContextWithWidgets,
-      input.config.systemInstructions,
-      input.config.mode,
-    );
+      if (!classification.classification.skipSearch) {
+        const researcher = new Researcher();
+        searchPromise = researcher
+          .research(session, {
+            chatHistory: input.chatHistory,
+            followUp: input.followUp,
+            classification: classification,
+            config: input.config,
+          })
+          .catch((err) => {
+            console.error('Researcher failed:', err);
+            return null;
+          });
+      }
 
-    const answerStream = input.config.llm.streamText({
-      messages: [
-        {
-          role: 'system',
-          content: writerPrompt,
-        },
-        ...input.chatHistory,
-        {
-          role: 'user',
-          content: input.followUp,
-        },
-      ],
-    });
+      const [widgetOutputs, searchResults] = await Promise.all([
+        widgetPromise,
+        searchPromise,
+      ]);
 
-    let responseBlockId = '';
+      session.emit('data', {
+        type: 'researchComplete',
+      });
 
-    for await (const chunk of answerStream) {
-      if (!responseBlockId) {
-        const block: TextBlock = {
+      let finalContext =
+        '<Query to be answered without searching; Search not made>';
+
+      if (searchResults) {
+        finalContext = searchResults.searchFindings
+          .map(
+            (f, index) =>
+              `<result index=${index + 1} title=${f.metadata.title}>${f.content}</result>`,
+          )
+          .join('\n');
+      }
+
+      const widgetContext = widgetOutputs
+        .map((o) => {
+          return `<result>${o.llmContext}</result>`;
+        })
+        .join('\n-------------\n');
+
+      const finalContextWithWidgets = `<search_results note="These are the search results and assistant can cite these">\n${finalContext}\n</search_results>\n<widgets_result noteForAssistant="Its output is already showed to the user, assistant can use this information to answer the query but do not CITE this as a souce">\n${widgetContext}\n</widgets_result>`;
+
+      const writerPrompt = getWriterPrompt(
+        finalContextWithWidgets,
+        input.config.systemInstructions,
+        input.config.mode,
+      );
+
+      try {
+        const answerStream = input.config.llm.streamText({
+          messages: [
+            {
+              role: 'system',
+              content: writerPrompt,
+            },
+            ...input.chatHistory,
+            {
+              role: 'user',
+              content: input.followUp,
+            },
+          ],
+        });
+
+        let responseBlockId = '';
+
+        for await (const chunk of answerStream) {
+          if (!responseBlockId) {
+            const block: TextBlock = {
+              id: crypto.randomUUID(),
+              type: 'text',
+              data: chunk.contentChunk,
+            };
+
+            session.emitBlock(block);
+
+            responseBlockId = block.id;
+          } else {
+            const block = session.getBlock(responseBlockId) as TextBlock | null;
+
+            if (!block) {
+              continue;
+            }
+
+            block.data += chunk.contentChunk;
+
+            session.updateBlock(block.id, [
+              {
+                op: 'replace',
+                path: '/data',
+                value: block.data,
+              },
+            ]);
+          }
+        }
+      } catch (streamErr) {
+        console.error('Answer streaming failed:', streamErr);
+        session.emitBlock({
           id: crypto.randomUUID(),
           type: 'text',
-          data: chunk.contentChunk,
-        };
-
-        session.emitBlock(block);
-
-        responseBlockId = block.id;
-      } else {
-        const block = session.getBlock(responseBlockId) as TextBlock | null;
-
-        if (!block) {
-          continue;
-        }
-
-        block.data += chunk.contentChunk;
-
-        session.updateBlock(block.id, [
-          {
-            op: 'replace',
-            path: '/data',
-            value: block.data,
-          },
-        ]);
+          data: 'I encountered an issue generating the final answer. Please try again or rephrase your query.',
+        });
       }
+
+      session.emit('end', {});
+
+      await db
+        .update(messages)
+        .set({
+          status: 'completed',
+          responseBlocks: session.getAllBlocks(),
+        })
+        .where(
+          and(
+            eq(messages.chatId, input.chatId),
+            eq(messages.messageId, input.messageId),
+          ),
+        )
+        .execute();
+    } catch (globalErr) {
+      console.error('Unhandled error in searchAsync:', globalErr);
+      session.emit('data', {
+        type: 'researchComplete',
+      });
+      session.emitBlock({
+        id: crypto.randomUUID(),
+        type: 'text',
+        data: 'An unexpected error occurred while processing your request. Please try again.',
+      });
+      session.emit('end', {});
+
+      await db
+        .update(messages)
+        .set({
+          status: 'error',
+          responseBlocks: session.getAllBlocks(),
+        })
+        .where(
+          and(
+            eq(messages.chatId, input.chatId),
+            eq(messages.messageId, input.messageId),
+          ),
+        )
+        .execute();
     }
-
-    session.emit('end', {});
-
-    await db
-      .update(messages)
-      .set({
-        status: 'completed',
-        responseBlocks: session.getAllBlocks(),
-      })
-      .where(
-        and(
-          eq(messages.chatId, input.chatId),
-          eq(messages.messageId, input.messageId),
-        ),
-      )
-      .execute();
   }
 }
 

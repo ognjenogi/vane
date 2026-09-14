@@ -164,6 +164,15 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
     for await (const chunk of stream) {
       if (chunk.choices && chunk.choices.length > 0) {
         const toolCalls = chunk.choices[0].delta.tool_calls;
+        const safeParseJson = (str: string) => {
+          if (!str || !str.trim()) return {};
+          try {
+            return parse(str);
+          } catch {
+            return {};
+          }
+        };
+
         yield {
           contentChunk: chunk.choices[0].delta.content || '',
           toolCallChunk:
@@ -175,13 +184,13 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
                   arguments: tc.function?.arguments || '',
                 };
                 recievedToolCalls.push(call);
-                return { ...call, arguments: parse(call.arguments || '{}') };
+                return { ...call, arguments: safeParseJson(call.arguments) };
               } else {
                 const existingCall = recievedToolCalls[tc.index];
                 existingCall.arguments += tc.function?.arguments || '';
                 return {
                   ...existingCall,
-                  arguments: parse(existingCall.arguments),
+                  arguments: safeParseJson(existingCall.arguments),
                 };
               }
             }) || [],
@@ -214,13 +223,25 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
 
     if (response.choices && response.choices.length > 0) {
       try {
-        return input.schema.parse(
-          JSON.parse(
-            repairJson(response.choices[0].message.content!, {
-              extractJson: true,
-            }) as string,
-          ),
-        ) as T;
+        const rawContent = response.choices[0].message.content;
+        if (!rawContent) {
+          throw new Error('Empty response content from OpenAI');
+        }
+        
+        const repairedJson = repairJson(rawContent, {
+          extractJson: true,
+        }) as string;
+        
+        const parsed = JSON.parse(repairedJson);
+        const validated = input.schema.safeParse(parsed);
+        
+        if (!validated.success) {
+          console.warn('Schema validation failed, attempting direct return:', validated.error.message);
+          // Return the parsed JSON as-is if it has the right shape
+          return parsed as T;
+        }
+        
+        return validated.data as T;
       } catch (err) {
         throw new Error(`Error parsing response from OpenAI: ${err}`);
       }

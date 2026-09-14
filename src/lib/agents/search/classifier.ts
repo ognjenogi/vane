@@ -35,19 +35,40 @@ const schema = z.object({
 });
 
 export const classify = async (input: ClassifierInput) => {
-  const output = await input.llm.generateObject<typeof schema>({
-    messages: [
-      {
-        role: 'system',
-        content: classifierPrompt,
-      },
-      {
-        role: 'user',
-        content: `<conversation_history>\n${formatChatHistoryAsString(input.chatHistory)}\n</conversation_history>\n<user_query>\n${input.query}\n</user_query>`,
-      },
-    ],
-    schema,
-  });
+  try {
+    const output = await Promise.race([
+      input.llm.generateObject<typeof schema>({
+        messages: [
+          {
+            role: 'system',
+            content: classifierPrompt,
+          },
+          {
+            role: 'user',
+            content: `<conversation_history>\n${formatChatHistoryAsString(input.chatHistory)}\n</conversation_history>\n<user_query>\n${input.query}\n</user_query>`,
+          },
+        ],
+        schema,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Classification timed out after 4s')), 4000)
+      ),
+    ]);
 
-  return output;
+    return output;
+  } catch (err) {
+    console.warn('Classification failed, using defaults:', err instanceof Error ? err.message : err);
+    return {
+      classification: {
+        skipSearch: false,
+        personalSearch: false,
+        academicSearch: false,
+        discussionSearch: false,
+        showWeatherWidget: false,
+        showStockWidget: false,
+        showCalculationWidget: false,
+      },
+      standaloneFollowUp: input.query,
+    };
+  }
 };

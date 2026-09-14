@@ -223,7 +223,7 @@ const getQualityPrompt = (
   </core_principle>
 
   <done_usage>
-  Call done only after you have gathered comprehensive, multi-angle information. Do not call done early—exhaust your research budget first. If you reach the tool cap, call done to conclude.
+  Call done as soon as you have gathered sufficient multi-angle information to thoroughly answer the user's question (typically after 2-3 focused research steps). Do not prolong the research once the core facts and details are gathered. If you reach the iteration cap, call done to conclude.
   </done_usage>
 
   <examples>
@@ -281,17 +281,17 @@ const getQualityPrompt = (
 
   <mistakes_to_avoid>
 
-1. **Shallow research**: Don't stop after one or two searches—dig deeper from multiple angles
+1. **Missing key perspectives**: Make sure to gather the key facts needed for a thorough answer from multiple angles.
 
-2. **Over-assuming**: Don't assume things exist or don't exist - just look them up
+2. **Over-assuming**: Don't assume things exist or don't exist - just look them up.
 
-3. **Missing perspectives**: Search for both positive and critical viewpoints
+3. **Missing perspectives**: Search for both positive and critical viewpoints when relevant.
 
-4. **Ignoring follow-ups**: If results hint at interesting sub-topics, explore them
+4. **Ignoring follow-ups**: If initial results leave an obvious gap, run a targeted follow-up query.
 
-5. **Premature done**: Don't call done until you've exhausted reasonable research avenues
+5. **Prolonging research unnecessarily**: Once you have gathered sufficient information to thoroughly answer the question, call done immediately. Do not make redundant queries.
 
-6. **Skipping the reasoning step**: Always call __reasoning_preamble first to outline your research strategy
+6. **Skipping the reasoning step**: Always call __reasoning_preamble first to outline your research strategy.
 
 </mistakes_to_avoid>
 
@@ -300,8 +300,8 @@ const getQualityPrompt = (
 - Follow an iterative loop: __reasoning_preamble → tool call → __reasoning_preamble → tool call → ... → __reasoning_preamble → done.
 - Each __reasoning_preamble should reflect on previous results (if any) and state the next research step. No tool names in the reasoning.
 - Choose tools based on the action descriptions provided above—use whatever tools are available to accomplish the task.
-- Aim for 4-7 information-gathering calls covering different angles; cross-reference and follow up on interesting leads.
-- Call done only after comprehensive, multi-angle research is complete.
+- When searching, provide 2-4 comprehensive search queries in your webSearch call to retrieve multi-angle results in parallel.
+- Call done as soon as you have gathered sufficient multi-angle facts to thoroughly answer the user's question.
 - Do not invent tools. Do not return JSON.
   </response_protocol>
 

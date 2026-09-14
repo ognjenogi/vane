@@ -7,7 +7,7 @@ export interface SearxngSearchOptions {
   pageno?: number;
 }
 
-interface SearxngSearchResult {
+export interface SearxngSearchResult {
   title: string;
   url: string;
   img_src?: string;
@@ -18,10 +18,49 @@ interface SearxngSearchResult {
   iframe_src?: string;
 }
 
+export interface SearxngSearchResponse {
+  results: SearxngSearchResult[];
+  suggestions: string[];
+}
+
+// Simple in-memory cache with TTL
+const searchCache = new Map<
+  string,
+  { data: SearxngSearchResponse; timestamp: number }
+>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHE_SIZE = 200;
+
+function getCacheKey(query: string, opts?: SearxngSearchOptions): string {
+  return `${query}::${JSON.stringify(opts || {})}`;
+}
+
+function getCached(key: string): SearxngSearchResponse | null {
+  const entry = searchCache.get(key);
+  if (!entry || Date.now() - entry.timestamp > CACHE_TTL) {
+    searchCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(key: string, data: SearxngSearchResponse): void {
+  if (searchCache.size >= MAX_CACHE_SIZE) {
+    const oldestKey = searchCache.keys().next().value;
+    if (oldestKey) searchCache.delete(oldestKey);
+  }
+  searchCache.set(key, { data, timestamp: Date.now() });
+}
+
 export const searchSearxng = async (
   query: string,
   opts?: SearxngSearchOptions,
-) => {
+): Promise<SearxngSearchResponse> => {
+  // Check cache first
+  const cacheKey = getCacheKey(query, opts);
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
   const searxngURL = getSearxngURL();
 
   const url = new URL(`${searxngURL}/search?format=json`);
@@ -55,7 +94,12 @@ export const searchSearxng = async (
     const results: SearxngSearchResult[] = data.results;
     const suggestions: string[] = data.suggestions;
 
-    return { results, suggestions };
+    const result = { results, suggestions };
+    
+    // Cache successful results
+    setCache(cacheKey, result);
+    
+    return result;
   } catch (err: any) {
     if (err.name === 'AbortError') {
       throw new Error('SearXNG search timed out');

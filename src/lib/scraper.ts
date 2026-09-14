@@ -5,7 +5,7 @@ import { Mutex } from 'async-mutex';
 class Scraper {
   private static browser: any | undefined;
   private static IDLE_KILL_TIMEOUT = 30000;
-  private static NAVIGATION_TIMEOUT = 20000;
+  private static NAVIGATION_TIMEOUT = 5000;
   private static idleTimeout: NodeJS.Timeout | undefined;
   private static browserMutex = new Mutex();
   private static userCount = 0;
@@ -49,6 +49,43 @@ class Scraper {
   static async scrape(
     url: string,
   ): Promise<{ content: string; title: string }> {
+    // Fast path: HTTP fetch with JSDOM + Readability (sub-second, low memory)
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
+      clearTimeout(timeout);
+
+      if (res.ok) {
+        const html = await res.text();
+        const dom = new JSDOM(html, { url });
+        const article = new Readability(dom.window.document).parse();
+        const title = dom.window.document.title || article?.title || 'No title';
+        const textContent = article?.textContent?.trim();
+
+        if (textContent && textContent.length > 200) {
+          return {
+            content: `
+        # ${title} - ${url}
+        ${textContent}
+        `,
+            title,
+          };
+        }
+      }
+    } catch {
+      // Fast path failed or timed out; proceed to browser fallback
+    }
+
     await this.initBrowser();
 
     if (!this.browser) throw new Error('Browser not initialized');

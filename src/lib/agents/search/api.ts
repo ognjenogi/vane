@@ -7,12 +7,30 @@ import { WidgetExecutor } from './widgets';
 
 class APISearchAgent {
   async searchAsync(session: SessionManager, input: SearchAgentInput) {
-    const classification = await classify({
-      chatHistory: input.chatHistory,
-      enabledSources: input.config.sources,
-      query: input.followUp,
-      llm: input.config.llm,
-    });
+    // Classify with error handling
+    let classification;
+    try {
+      classification = await classify({
+        chatHistory: input.chatHistory,
+        enabledSources: input.config.sources,
+        query: input.followUp,
+        llm: input.config.llm,
+      });
+    } catch (err) {
+      console.error('Classification failed, using defaults:', err);
+      classification = {
+        classification: {
+          skipSearch: false,
+          personalSearch: false,
+          academicSearch: false,
+          discussionSearch: false,
+          showWeatherWidget: false,
+          showStockWidget: false,
+          showCalculationWidget: false,
+        },
+        standaloneFollowUp: input.followUp,
+      };
+    }
 
     const widgetPromise = WidgetExecutor.executeAll({
       classification,
@@ -24,7 +42,7 @@ class APISearchAgent {
       return [];
     });
 
-    let searchPromise: Promise<ResearcherOutput> | null = null;
+    let searchPromise: Promise<ResearcherOutput | null> = Promise.resolve(null);
 
     if (!classification.classification.skipSearch) {
       const researcher = new Researcher();
@@ -33,6 +51,9 @@ class APISearchAgent {
         followUp: input.followUp,
         classification: classification,
         config: input.config,
+      }).catch((err) => {
+        console.error('Research failed:', err);
+        return null;
       });
     }
 
@@ -74,24 +95,32 @@ class APISearchAgent {
       input.config.mode,
     );
 
-    const answerStream = input.config.llm.streamText({
-      messages: [
-        {
-          role: 'system',
-          content: writerPrompt,
-        },
-        ...input.chatHistory,
-        {
-          role: 'user',
-          content: input.followUp,
-        },
-      ],
-    });
+    try {
+      const answerStream = input.config.llm.streamText({
+        messages: [
+          {
+            role: 'system',
+            content: writerPrompt,
+          },
+          ...input.chatHistory,
+          {
+            role: 'user',
+            content: input.followUp,
+          },
+        ],
+      });
 
-    for await (const chunk of answerStream) {
+      for await (const chunk of answerStream) {
+        session.emit('data', {
+          type: 'response',
+          data: chunk.contentChunk,
+        });
+      }
+    } catch (err) {
+      console.error('Answer generation failed:', err);
       session.emit('data', {
         type: 'response',
-        data: chunk.contentChunk,
+        data: 'I encountered an error generating the answer. Please try again.',
       });
     }
 

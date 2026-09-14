@@ -87,7 +87,15 @@ const webSearchAction: ResearchAction<typeof actionSchema> = {
   execute: async (input, additionalConfig) => {
     input.queries = (
       Array.isArray(input.queries) ? input.queries : [input.queries]
-    ).slice(0, 3);
+    )
+      .filter(
+        (q) =>
+          typeof q === 'string' &&
+          q.trim().length > 0 &&
+          q.trim().toLowerCase() !== 'undefined' &&
+          q.trim().toLowerCase() !== 'null',
+      )
+      .slice(0, 3);
 
     const researchBlock = additionalConfig.session.getBlock(
       additionalConfig.researchBlockId,

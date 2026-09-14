@@ -14,10 +14,10 @@ class Researcher {
     let actionOutput: ActionOutput[] = [];
     let maxIteration =
       input.config.mode === 'speed'
-        ? 2
+        ? 1
         : input.config.mode === 'balanced'
-          ? 6
-          : 25;
+          ? 2
+          : 3;
 
     const availableTools = ActionRegistry.getAvailableActionTools({
       classification: input.classification,
@@ -35,12 +35,19 @@ class Researcher {
       });
 
     const researchBlockId = crypto.randomUUID();
+    const initialReasoningId = crypto.randomUUID();
 
     session.emitBlock({
       id: researchBlockId,
       type: 'research',
       data: {
-        subSteps: [],
+        subSteps: [
+          {
+            id: initialReasoningId,
+            type: 'reasoning',
+            reasoning: 'Analyzing request and searching sources...',
+          },
+        ],
       },
     });
 
@@ -56,7 +63,15 @@ class Researcher {
       },
     ];
 
+    const researchStartTime = Date.now();
+    const MAX_RESEARCH_TIME_MS = 25000; // 25 second max for entire research
+
     for (let i = 0; i < maxIteration; i++) {
+      // Timeout guard
+      if (Date.now() - researchStartTime > MAX_RESEARCH_TIME_MS) {
+        console.warn('Research loop timed out');
+        break;
+      }
       const researcherPrompt = getResearcherPrompt(
         availableActionsDescription,
         input.config.mode,
@@ -95,11 +110,23 @@ class Researcher {
             ) {
               reasoningEmitted = true;
 
-              block.data.subSteps.push({
-                id: reasoningId,
-                type: 'reasoning',
-                reasoning: tc.arguments['plan'],
-              });
+              const existingInitial = block.data.subSteps.find(
+                (s: any) => s.id === initialReasoningId,
+              );
+              if (
+                existingInitial &&
+                existingInitial.type === 'reasoning' &&
+                i === 0
+              ) {
+                reasoningId = initialReasoningId;
+                existingInitial.reasoning = tc.arguments['plan'];
+              } else {
+                block.data.subSteps.push({
+                  id: reasoningId,
+                  type: 'reasoning',
+                  reasoning: tc.arguments['plan'],
+                });
+              }
 
               session.updateBlock(researchBlockId, [
                 {
