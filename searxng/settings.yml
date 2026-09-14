@@ -22,41 +22,68 @@ outgoing:
   pool_maxsize: 20
 
 engines:
+  # Primary: Engines verified working on Contabo VPS IP
+  - name: yandex
+    engine: yandex
+    categories: [general, web]
+    disabled: false
+    weight: 3
+    shortcut: yx
+  - name: seznam
+    engine: seznam
+    categories: [general, web]
+    disabled: false
+    weight: 3
+    shortcut: sz
   - name: bing
     engine: bing
     categories: [general, web]
     disabled: false
-    weight: 2
+    weight: 0.5
+  # Secondary: May work intermittently, keep as fallbacks
   - name: brave
     engine: brave
     categories: [general, web]
     disabled: false
-    weight: 2
+    weight: 1
   - name: duckduckgo
     engine: duckduckgo
     categories: [general, web]
     disabled: false
-    weight: 1
+    weight: 0.5
   - name: google
     engine: google
     categories: [general, web]
     disabled: false
-    weight: 1.5
+    weight: 1
   - name: qwant
     engine: qwant
     categories: [general, web]
     disabled: false
-    weight: 1
+    weight: 0.5
   - name: yahoo
     engine: yahoo
     categories: [general, web]
     disabled: false
-    weight: 1
+    weight: 0.5
+  # Domain-specific: Always work from datacenter IPs
   - name: wikipedia
     engine: wikipedia
     categories: [general]
     disabled: false
+    weight: 1.5
+  - name: imdb
+    engine: imdb
+    categories: [general]
+    disabled: false
     weight: 1
+    shortcut: imdb
+  - name: hackernews
+    engine: hackernews
+    categories: [general, news, it]
+    disabled: false
+    weight: 1
+    shortcut: hn
   - name: arxiv
     engine: arxiv
     categories: [science, scientific publications]

@@ -127,6 +127,8 @@ class SearchAgent {
         type: 'researchComplete',
       });
 
+      const didSkipSearch = classification.classification.skipSearch;
+
       let finalContext =
         '<Query to be answered without searching; Search not made>';
 
@@ -138,6 +140,8 @@ class SearchAgent {
           )
           .join('\n');
       }
+
+      const hasSearchResults = !!searchResults && searchResults.searchFindings.length > 0;
 
       const widgetContext = widgetOutputs
         .map((o) => {
@@ -151,6 +155,7 @@ class SearchAgent {
         finalContextWithWidgets,
         input.config.systemInstructions,
         input.config.mode,
+        hasSearchResults,
       );
 
       try {
