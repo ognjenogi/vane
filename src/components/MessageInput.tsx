@@ -68,15 +68,15 @@ const MessageInput = () => {
       )}
     >
       {mode === 'single' && (
-        <div className="flex items-center space-x-0.5 mr-1">
+        <div className="flex items-center space-x-1 mr-1 shrink-0">
           <AttachSmall />
-          <ModelSelector />
           <VoiceRecorderButton
             onTranscribed={(text) => {
               setMessage((prev) => (prev ? `${prev.trim()} ${text}` : text));
               inputRef.current?.focus();
             }}
           />
+          <ModelSelector placement="top-start" />
         </div>
       )}
       <TextareaAutosize
@@ -92,26 +92,26 @@ const MessageInput = () => {
       {mode === 'single' && (
         <button
           disabled={message.trim().length === 0 || loading}
-          className="bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2"
+          className="bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0 ml-1"
         >
           <ArrowUp className="bg-background" size={17} />
         </button>
       )}
       {mode === 'multi' && (
         <div className="flex flex-row items-center justify-between w-full pt-2">
-          <div className="flex items-center space-x-0.5">
+          <div className="flex items-center space-x-1">
             <AttachSmall />
-            <ModelSelector />
             <VoiceRecorderButton
               onTranscribed={(text) => {
                 setMessage((prev) => (prev ? `${prev.trim()} ${text}` : text));
                 inputRef.current?.focus();
               }}
             />
+            <ModelSelector placement="top-start" />
           </div>
           <button
             disabled={message.trim().length === 0 || loading}
-            className="bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2"
+            className="bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0"
           >
             <ArrowUp className="bg-background" size={17} />
           </button>
