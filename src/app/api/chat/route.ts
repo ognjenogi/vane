@@ -128,6 +128,10 @@ export const POST = async (req: Request) => {
       );
     }
 
+    console.log(
+      `[Chat API] Chat: ${body.message.chatId} | Model: ${body.chatModel.key} (${body.chatModel.providerId}) | Mode: ${body.optimizationMode}`
+    );
+
     const registry = new ModelRegistry();
 
     const [llm, embedding] = await Promise.all([

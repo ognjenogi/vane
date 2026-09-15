@@ -140,6 +140,10 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
       });
     });
 
+    console.log(
+      `[OpenAILLM] Streaming completion using model "${this.config.model}" via ${this.config.baseURL}`
+    );
+
     const stream = await this.openAIClient.chat.completions.create({
       model: this.config.model,
       messages: this.convertToOpenAIMessages(input.messages),

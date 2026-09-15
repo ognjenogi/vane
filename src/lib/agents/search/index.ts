@@ -206,10 +206,12 @@ class SearchAgent {
         }
       } catch (streamErr) {
         console.error('Answer streaming failed:', streamErr);
+        const modelName = (input.config.llm as any)?.config?.model || 'selected model';
+        const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
         session.emitBlock({
           id: crypto.randomUUID(),
           type: 'text',
-          data: 'I encountered an issue generating the final answer. Please try again or rephrase your query.',
+          data: `I encountered an issue generating the answer with model "${modelName}" (${errMsg}). Please select another model or try again.`,
         });
       }
 
