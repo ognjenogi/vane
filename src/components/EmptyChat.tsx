@@ -70,8 +70,17 @@ const EmptyChat = () => {
               <FolderKanban size={14} />
               <span>Project: <strong>{projectName || 'Workspace'}</strong></span>
               <button
-                onClick={() => setProjectId(null)}
-                className="ml-1 p-0.5 hover:bg-blue-500/20 rounded-full transition-colors text-blue-500/70 hover:text-blue-600 dark:hover:text-blue-300"
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setProjectId(null);
+                  setProjectName(null);
+                  if (typeof window !== 'undefined') {
+                    window.history.replaceState(null, '', '/');
+                  }
+                }}
+                className="ml-1 p-0.5 hover:bg-blue-500/20 rounded-full transition-colors text-blue-500/70 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer"
                 title="Exit project mode"
               >
                 <X size={12} />

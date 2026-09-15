@@ -11,7 +11,7 @@ import {
   useState,
 } from 'react';
 import crypto from 'crypto';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { getSuggestions } from '../actions';
 import { MinimalProvider } from '../models/types';
@@ -277,14 +277,36 @@ export const chatContext = createContext<ChatContext>({
 });
 
 export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
+  const router = useRouter();
   const params: { chatId: string } = useParams();
 
   const searchParams = useSearchParams();
   const initialMessage = searchParams.get('q');
   const projectIdParam = searchParams.get('projectId');
-  const [projectId, setProjectId] = useState<string | null>(
+  const [projectId, setProjectIdState] = useState<string | null>(
     projectIdParam || null,
   );
+  const lastParamProjectIdRef = useRef<string | null>(projectIdParam || null);
+
+  const setProjectId = (id: string | null) => {
+    setProjectIdState(id);
+    if (!id) {
+      lastParamProjectIdRef.current = null;
+      if (typeof window !== 'undefined' && !params.chatId) {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('projectId')) {
+          url.searchParams.delete('projectId');
+          window.history.replaceState(
+            null,
+            '',
+            url.pathname + (url.search ? url.search : ''),
+          );
+        }
+      }
+    } else {
+      lastParamProjectIdRef.current = id;
+    }
+  };
 
   const [chatId, setChatId] = useState<string | undefined>(params.chatId);
   const [newChatCreated, setNewChatCreated] = useState(false);
@@ -485,12 +507,13 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     const pId = searchParams.get('projectId');
-    if (pId && pId !== projectId) {
-      setProjectId(pId);
+    if (pId !== lastParamProjectIdRef.current) {
+      lastParamProjectIdRef.current = pId;
+      setProjectIdState(pId);
     } else if (!params.chatId && !pId && projectId) {
-      setProjectId(null);
+      setProjectIdState(null);
     }
-  }, [searchParams, params.chatId, projectId]);
+  }, [searchParams, params.chatId]);
 
   useEffect(() => {
     if (params.chatId && params.chatId !== chatId) {

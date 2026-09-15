@@ -9,6 +9,7 @@ import {
   FolderPlus,
   FolderMinus,
   Check,
+  X,
 } from 'lucide-react';
 import { Message } from './ChatWindow';
 import { useEffect, useState, Fragment } from 'react';
@@ -331,16 +332,32 @@ const Navbar = () => {
 
           <div className="flex-1 mx-4 min-w-0 flex flex-col items-center justify-center">
             {projectId && (
-              <a
-                href={`/project/${projectId}`}
-                className="inline-flex items-center gap-1.5 px-2 py-0.5 mb-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20 transition-colors"
-                title="View Project Workspace"
-              >
-                <FolderKanban size={12} />
-                <span className="truncate max-w-[150px]">
-                  {projectName || 'Project Workspace'}
-                </span>
-              </a>
+              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 mb-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                <a
+                  href={`/project/${projectId}`}
+                  className="inline-flex items-center gap-1.5 hover:underline"
+                  title="View Project Workspace"
+                >
+                  <FolderKanban size={12} />
+                  <span className="truncate max-w-[150px]">
+                    {projectName || 'Project Workspace'}
+                  </span>
+                </a>
+                {!chatId && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setProjectId(null);
+                    }}
+                    className="p-0.5 hover:bg-blue-500/20 rounded-full transition-colors text-blue-500/70 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer"
+                    title="Exit project mode"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
             )}
             <h1 className="text-center text-sm font-medium text-black/80 dark:text-white/90 truncate">
               {title || 'New Conversation'}
