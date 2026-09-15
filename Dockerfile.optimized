@@ -28,6 +28,9 @@ COPY --from=builder /home/vane/drizzle ./drizzle
 COPY searxng/settings.yml /etc/searxng/settings.yml
 RUN chown -R searxng:searxng /etc/searxng
 
+COPY entrypoint.sh /home/vane/entrypoint.sh
+RUN chmod +x /home/vane/entrypoint.sh
+
 EXPOSE 3000 8080
 
 CMD ["/home/vane/entrypoint.sh"]
