@@ -321,9 +321,20 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
   const [files, setFiles] = useState<File[]>([]);
   const [fileIds, setFileIds] = useState<string[]>([]);
-
   const [sources, setSources] = useState<string[]>(['web']);
-  const [optimizationMode, setOptimizationMode] = useState('speed');
+  const [optimizationMode, setOptimizationModeState] = useState('speed');
+
+  useEffect(() => {
+    const saved = localStorage.getItem('optimizationMode');
+    if (saved && ['speed', 'balanced', 'quality'].includes(saved)) {
+      setOptimizationModeState(saved);
+    }
+  }, []);
+
+  const setOptimizationMode = (mode: string) => {
+    setOptimizationModeState(mode);
+    localStorage.setItem('optimizationMode', mode);
+  };
 
   const [isMessagesLoaded, setIsMessagesLoaded] = useState(false);
 
