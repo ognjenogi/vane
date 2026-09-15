@@ -236,8 +236,8 @@ const loadMessages = async (
   setFiles(files);
   setFileIds(files.map((file: File) => file.fileId));
 
-  if (data.chat?.projectId && setProjectId) {
-    setProjectId(data.chat.projectId);
+  if (setProjectId) {
+    setProjectId(data.chat?.projectId || null);
   }
 
   chatHistory.current = history;
@@ -484,6 +484,15 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   useEffect(() => {
+    const pId = searchParams.get('projectId');
+    if (pId && pId !== projectId) {
+      setProjectId(pId);
+    } else if (!params.chatId && !pId && projectId) {
+      setProjectId(null);
+    }
+  }, [searchParams, params.chatId, projectId]);
+
+  useEffect(() => {
     if (params.chatId && params.chatId !== chatId) {
       setChatId(params.chatId);
       setMessages([]);
@@ -493,8 +502,17 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
       setIsMessagesLoaded(false);
       setNotFound(false);
       setNewChatCreated(false);
+    } else if (!params.chatId && chatId && !newChatCreated) {
+      setChatId(crypto.randomBytes(20).toString('hex'));
+      setMessages([]);
+      chatHistory.current = [];
+      setFiles([]);
+      setFileIds([]);
+      setIsMessagesLoaded(true);
+      setNotFound(false);
+      setNewChatCreated(true);
     }
-  }, [params.chatId, chatId]);
+  }, [params.chatId, chatId, newChatCreated]);
 
   useEffect(() => {
     if (

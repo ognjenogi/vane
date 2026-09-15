@@ -204,4 +204,32 @@ export class ProjectManager {
 
     return updatedFiles;
   }
+
+  static async addChatsToProject(projectId: string, chatIds: string[]) {
+    for (const chatId of chatIds) {
+      await db
+        .update(chats)
+        .set({ projectId })
+        .where(eq(chats.id, chatId))
+        .run();
+    }
+
+    await db
+      .update(projects)
+      .set({ updatedAt: new Date().toISOString() })
+      .where(eq(projects.id, projectId))
+      .run();
+
+    return true;
+  }
+
+  static async removeChatFromProject(chatId: string) {
+    await db
+      .update(chats)
+      .set({ projectId: null })
+      .where(eq(chats.id, chatId))
+      .run();
+
+    return true;
+  }
 }

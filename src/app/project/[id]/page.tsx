@@ -14,10 +14,13 @@ import {
   ArrowLeft,
   Clock,
   Sparkles,
+  FolderPlus,
+  FolderMinus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatTimeDifference } from '@/lib/utils';
 import DeleteChat from '@/components/DeleteChat';
+import AddChatToProjectModal from '@/components/AddChatToProjectModal';
 
 interface DBFile {
   name: string;
@@ -52,10 +55,48 @@ const ProjectDetailPage = () => {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [savingInstructions, setSavingInstructions] = useState(false);
+  const [isAddChatModalOpen, setIsAddChatModalOpen] = useState(false);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [instructions, setInstructions] = useState('');
+
+  const handleRemoveChatFromProject = async (
+    chatId: string,
+    e: React.MouseEvent,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (
+      !confirm(
+        'Remove this conversation from the project? The conversation will remain in your general history.',
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/projects/${id}/chats?chatId=${chatId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        toast.success('Conversation removed from project');
+        setProject((prev) =>
+          prev
+            ? {
+                ...prev,
+                chats: prev.chats.filter((c) => c.id !== chatId),
+              }
+            : null,
+        );
+      } else {
+        toast.error('Failed to remove conversation');
+      }
+    } catch {
+      toast.error('Error removing conversation');
+    }
+  };
 
   const fetchProject = async () => {
     try {
@@ -217,13 +258,13 @@ const ProjectDetailPage = () => {
           <span>Back to Projects</span>
         </Link>
 
-        <Link
+        <a
           href={`/?projectId=${project.id}`}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-black text-white dark:bg-white dark:text-black text-sm font-medium hover:opacity-90 transition shadow-sm"
         >
           <Plus size={16} />
           <span>Start New Chat in Project</span>
-        </Link>
+        </a>
       </div>
 
       {/* Project Meta / Name / Description Card */}
@@ -354,9 +395,19 @@ const ProjectDetailPage = () => {
                   Project Conversations
                 </h3>
               </div>
-              <span className="text-xs text-black/50 dark:text-white/50">
-                {project.chats?.length || 0} chats
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAddChatModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-light-200 dark:border-dark-200 bg-light-primary dark:bg-dark-primary text-xs font-medium text-black dark:text-white hover:bg-light-200 hover:dark:bg-dark-200 transition shadow-sm"
+                >
+                  <FolderPlus size={14} className="text-blue-500" />
+                  <span>Add Existing</span>
+                </button>
+                <span className="text-xs text-black/50 dark:text-white/50">
+                  {project.chats?.length || 0} chats
+                </span>
+              </div>
             </div>
 
             {project.chats && project.chats.length > 0 ? (
@@ -378,11 +429,20 @@ const ProjectDetailPage = () => {
                     </div>
 
                     <div
+                      className="flex items-center gap-1"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
                       }}
                     >
+                      <button
+                        type="button"
+                        onClick={(e) => handleRemoveChatFromProject(chat.id, e)}
+                        className="p-1.5 text-black/40 dark:text-white/40 hover:text-amber-600 hover:dark:text-amber-400 rounded-lg hover:bg-light-200 hover:dark:bg-dark-200 transition"
+                        title="Remove from project (keeps conversation)"
+                      >
+                        <FolderMinus size={15} />
+                      </button>
                       <DeleteChat
                         chatId={chat.id}
                         chats={project.chats as any}
@@ -402,18 +462,37 @@ const ProjectDetailPage = () => {
                 <p className="text-sm text-black/60 dark:text-white/60 mb-3">
                   No conversations yet in this project.
                 </p>
-                <Link
-                  href={`/?projectId=${project.id}`}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-black text-white dark:bg-white dark:text-black text-xs font-medium hover:opacity-90 transition"
-                >
-                  <Plus size={14} />
-                  <span>Start the first conversation</span>
-                </Link>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <a
+                    href={`/?projectId=${project.id}`}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-black text-white dark:bg-white dark:text-black text-xs font-medium hover:opacity-90 transition shadow-sm"
+                  >
+                    <Plus size={14} />
+                    <span>Start the first conversation</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddChatModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-light-200 dark:border-dark-200 bg-light-primary dark:bg-dark-primary text-xs font-medium text-black dark:text-white hover:bg-light-200 hover:dark:bg-dark-200 transition"
+                  >
+                    <FolderPlus size={14} className="text-blue-500" />
+                    <span>Add existing conversation</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      <AddChatToProjectModal
+        isOpen={isAddChatModalOpen}
+        setIsOpen={setIsAddChatModalOpen}
+        projectId={project.id}
+        projectName={project.name}
+        currentProjectChatIds={(project.chats || []).map((c) => c.id)}
+        onChatsAdded={() => fetchProject()}
+      />
     </div>
   );
 };

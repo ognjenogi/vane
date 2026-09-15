@@ -1,7 +1,19 @@
-import { Clock, Edit, Share, Trash, FileText, FileDown, FolderKanban } from 'lucide-react';
+import {
+  Clock,
+  Edit,
+  Share,
+  Trash,
+  FileText,
+  FileDown,
+  FolderKanban,
+  FolderPlus,
+  FolderMinus,
+  Check,
+} from 'lucide-react';
 import { Message } from './ChatWindow';
 import { useEffect, useState, Fragment } from 'react';
 import { formatTimeDifference } from '@/lib/utils';
+import { toast } from 'sonner';
 import DeleteChat from './DeleteChat';
 import {
   Popover,
@@ -201,8 +213,60 @@ const Navbar = () => {
   const [timeAgo, setTimeAgo] = useState<string>('');
 
   const [projectName, setProjectName] = useState<string | null>(null);
+  const [allProjects, setAllProjects] = useState<{ id: string; name: string }[]>(
+    [],
+  );
+  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [assigningProject, setAssigningProject] = useState(false);
 
-  const { sections, chatId, projectId } = useChat();
+  const { sections, chatId, projectId, setProjectId } = useChat();
+
+  const fetchAllProjects = async () => {
+    try {
+      setLoadingProjects(true);
+      const res = await fetch('/api/projects');
+      const data = await res.json();
+      if (res.ok && data.projects) {
+        setAllProjects(data.projects);
+      }
+    } catch (err) {
+      console.error('Error fetching projects:', err);
+    } finally {
+      setLoadingProjects(false);
+    }
+  };
+
+  const handleAssignProject = async (
+    targetProjectId: string | null,
+    targetProjectName?: string,
+  ) => {
+    if (!chatId) return;
+    try {
+      setAssigningProject(true);
+      const res = await fetch(`/api/chats/${chatId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: targetProjectId }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to update chat project');
+      }
+
+      setProjectId(targetProjectId);
+      if (targetProjectId && targetProjectName) {
+        setProjectName(targetProjectName);
+        toast.success(`Conversation assigned to "${targetProjectName}"`);
+      } else {
+        setProjectName(null);
+        toast.success('Conversation removed from project');
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Error updating conversation project');
+    } finally {
+      setAssigningProject(false);
+    }
+  };
 
   useEffect(() => {
     if (projectId) {
@@ -284,6 +348,105 @@ const Navbar = () => {
           </div>
 
           <div className="flex items-center gap-1 min-w-0">
+            {chatId && (
+              <Popover className="relative">
+                <PopoverButton
+                  onClick={fetchAllProjects}
+                  className="p-2 rounded-lg hover:bg-light-secondary dark:hover:bg-dark-secondary transition-colors duration-200"
+                  title={
+                    projectId
+                      ? `In Project: ${projectName || 'Workspace'}`
+                      : 'Assign to Project'
+                  }
+                >
+                  {projectId ? (
+                    <FolderKanban size={16} className="text-blue-500" />
+                  ) : (
+                    <FolderPlus
+                      size={16}
+                      className="text-black/60 dark:text-white/60"
+                    />
+                  )}
+                </PopoverButton>
+                <Transition
+                  as={Fragment}
+                  enter="transition ease-out duration-200"
+                  enterFrom="opacity-0 translate-y-1"
+                  enterTo="opacity-100 translate-y-0"
+                  leave="transition ease-in duration-150"
+                  leaveFrom="opacity-100 translate-y-0"
+                  leaveTo="opacity-0 translate-y-1"
+                >
+                  <PopoverPanel className="absolute right-0 mt-2 w-64 origin-top-right rounded-2xl bg-light-primary dark:bg-dark-primary border border-light-200 dark:border-dark-200 shadow-xl shadow-black/10 dark:shadow-black/30 z-50">
+                    <div className="p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-xs font-medium text-black/40 dark:text-white/40 uppercase tracking-wide">
+                          Project Workspace
+                        </p>
+                        {projectId && (
+                          <button
+                            type="button"
+                            disabled={assigningProject}
+                            onClick={() => handleAssignProject(null)}
+                            className="text-[11px] text-amber-600 dark:text-amber-400 hover:underline disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="space-y-1 max-h-56 overflow-y-auto">
+                        {loadingProjects ? (
+                          <div className="py-4 text-center text-xs text-black/40 dark:text-white/40">
+                            Loading projects...
+                          </div>
+                        ) : allProjects.length === 0 ? (
+                          <div className="py-3 text-center text-xs text-black/40 dark:text-white/40">
+                            No projects yet.
+                          </div>
+                        ) : (
+                          allProjects.map((p) => {
+                            const isCurrent = p.id === projectId;
+                            return (
+                              <button
+                                key={p.id}
+                                type="button"
+                                disabled={assigningProject || isCurrent}
+                                onClick={() =>
+                                  handleAssignProject(p.id, p.name)
+                                }
+                                className={`w-full flex items-center justify-between px-3 py-2 text-left rounded-xl transition-colors duration-200 text-xs ${
+                                  isCurrent
+                                    ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium'
+                                    : 'hover:bg-light-secondary dark:hover:bg-dark-secondary text-black dark:text-white'
+                                }`}
+                              >
+                                <span className="truncate flex-1 mr-2">
+                                  {p.name}
+                                </span>
+                                {isCurrent && (
+                                  <Check size={14} className="shrink-0" />
+                                )}
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      <div className="mt-2 pt-2 border-t border-light-200/50 dark:border-dark-200/50 flex justify-between items-center text-[11px]">
+                        <a
+                          href="/projects"
+                          className="text-blue-500 hover:underline flex items-center gap-1"
+                        >
+                          Manage Projects &rarr;
+                        </a>
+                      </div>
+                    </div>
+                  </PopoverPanel>
+                </Transition>
+              </Popover>
+            )}
+
             <Popover className="relative">
               <PopoverButton className="p-2 rounded-lg hover:bg-light-secondary dark:hover:bg-dark-secondary transition-colors duration-200">
                 <Share size={16} className="text-black/60 dark:text-white/60" />

@@ -67,3 +67,45 @@ export const DELETE = async (
     );
   }
 };
+
+export const PATCH = async (
+  req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) => {
+  try {
+    const { id } = await params;
+    const body = await req.json();
+
+    const chatExists = await db.query.chats.findFirst({
+      where: eq(chats.id, id),
+    });
+
+    if (!chatExists) {
+      return Response.json({ message: 'Chat not found' }, { status: 404 });
+    }
+
+    const updates: Partial<typeof chats.$inferInsert> = {};
+    if ('projectId' in body) {
+      updates.projectId = body.projectId || null;
+    }
+    if ('title' in body && typeof body.title === 'string') {
+      updates.title = body.title.trim();
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await db.update(chats).set(updates).where(eq(chats.id, id)).run();
+    }
+
+    const updated = await db.query.chats.findFirst({
+      where: eq(chats.id, id),
+    });
+
+    return Response.json({ chat: updated }, { status: 200 });
+  } catch (err) {
+    console.error('Error in updating chat by id: ', err);
+    return Response.json(
+      { message: 'An error has occurred.' },
+      { status: 500 },
+    );
+  }
+};
