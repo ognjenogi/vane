@@ -3,6 +3,7 @@ import { ArrowUp } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import AttachSmall from './MessageInputActions/AttachSmall';
+import VoiceRecorderButton from './VoiceRecorderButton';
 import { useChat } from '@/lib/hooks/useChat';
 
 const MessageInput = () => {
@@ -65,7 +66,17 @@ const MessageInput = () => {
         mode === 'multi' ? 'flex-col rounded-2xl' : 'flex-row rounded-full',
       )}
     >
-      {mode === 'single' && <AttachSmall />}
+      {mode === 'single' && (
+        <div className="flex items-center space-x-0.5 mr-1">
+          <AttachSmall />
+          <VoiceRecorderButton
+            onTranscribed={(text) => {
+              setMessage((prev) => (prev ? `${prev.trim()} ${text}` : text));
+              inputRef.current?.focus();
+            }}
+          />
+        </div>
+      )}
       <TextareaAutosize
         ref={inputRef}
         value={message}
@@ -86,7 +97,15 @@ const MessageInput = () => {
       )}
       {mode === 'multi' && (
         <div className="flex flex-row items-center justify-between w-full pt-2">
-          <AttachSmall />
+          <div className="flex items-center space-x-0.5">
+            <AttachSmall />
+            <VoiceRecorderButton
+              onTranscribed={(text) => {
+                setMessage((prev) => (prev ? `${prev.trim()} ${text}` : text));
+                inputRef.current?.focus();
+              }}
+            />
+          </div>
           <button
             disabled={message.trim().length === 0 || loading}
             className="bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2"

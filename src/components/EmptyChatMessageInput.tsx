@@ -4,6 +4,7 @@ import TextareaAutosize from 'react-textarea-autosize';
 import Sources from './MessageInputActions/Sources';
 import Optimization from './MessageInputActions/Optimization';
 import Attach from './MessageInputActions/Attach';
+import VoiceRecorderButton from './VoiceRecorderButton';
 import { useChat } from '@/lib/hooks/useChat';
 import ModelSelector from './MessageInputActions/ChatModelSelector';
 
@@ -71,6 +72,12 @@ const EmptyChatMessageInput = () => {
               <Sources />
               <ModelSelector />
               <Attach />
+              <VoiceRecorderButton
+                onTranscribed={(text) => {
+                  setMessage((prev) => (prev ? `${prev.trim()} ${text}` : text));
+                  inputRef.current?.focus();
+                }}
+              />
             </div>
             <button
               disabled={message.trim().length === 0}
