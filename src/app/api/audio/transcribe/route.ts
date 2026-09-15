@@ -6,6 +6,17 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
+    const contentType = req.headers.get('content-type') || '';
+    if (
+      !contentType.includes('multipart/form-data') &&
+      !contentType.includes('application/x-www-form-urlencoded')
+    ) {
+      return NextResponse.json(
+        { message: 'Invalid Content-Type. Expected multipart/form-data.' },
+        { status: 400 },
+      );
+    }
+
     const formData = await req.formData();
     const file = formData.get('file') as File | Blob | null;
 
