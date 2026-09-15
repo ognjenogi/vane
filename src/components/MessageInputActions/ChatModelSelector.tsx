@@ -433,12 +433,13 @@ const ModelSelector = ({
                   </div>
                 </motion.div>
               </PopoverPanel>
-            )}
-          </AnimatePresence>
-        </>
-      )}
-    </Popover>
-  );
+            </>
+          )}
+        </AnimatePresence>
+      </>
+    )}
+  </Popover>
+);
 };
 
 export default ModelSelector;
