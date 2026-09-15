@@ -29,4 +29,7 @@ fi
 cd /home/vane
 echo "Starting Vane..."
 
+# Patch upstream Next.js 16.3.5 standalone issue if present
+sed -i 's/validationLevel: this.nextConfig.experimental.instantInsights.validationLevel/validationLevel: this.nextConfig.experimental?.instantInsights?.validationLevel ?? "warning"/g' /home/vane/node_modules/next/dist/server/base-server.js 2>/dev/null || true
+
 exec node server.js
