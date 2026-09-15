@@ -1,5 +1,6 @@
 import configManager from '@/lib/config';
 import ModelRegistry from '@/lib/models/registry';
+import { clearOpenAIModelCache } from '@/lib/models/providers/openai';
 import { NextRequest, NextResponse } from 'next/server';
 import { ConfigModelProvider } from '@/lib/config/types';
 
@@ -10,6 +11,11 @@ type SaveConfigBody = {
 
 export const GET = async (req: NextRequest) => {
   try {
+    const url = new URL(req.url);
+    if (url.searchParams.get('refresh') === 'true') {
+      clearOpenAIModelCache();
+    }
+
     const values = configManager.getCurrentConfig();
     const fields = configManager.getUIConfigSections();
 

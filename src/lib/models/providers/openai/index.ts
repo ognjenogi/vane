@@ -130,13 +130,131 @@ const providerConfigFields: UIConfigField[] = [
   },
 ];
 
+const dynamicModelsCache = new Map<
+  string,
+  { models: ModelList; timestamp: number }
+>();
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes cache
+
+export const clearOpenAIModelCache = (providerId?: string) => {
+  if (providerId) {
+    for (const key of dynamicModelsCache.keys()) {
+      if (key.startsWith(`${providerId}::`)) {
+        dynamicModelsCache.delete(key);
+      }
+    }
+  } else {
+    dynamicModelsCache.clear();
+  }
+};
+
 class OpenAIProvider extends BaseModelProvider<OpenAIConfig> {
   constructor(id: string, name: string, config: OpenAIConfig) {
     super(id, name, config);
   }
 
   async getDefaultModels(): Promise<ModelList> {
-    if (this.config.baseURL === 'https://api.openai.com/v1') {
+    const isStandardOpenAI =
+      !this.config.baseURL ||
+      this.config.baseURL === 'https://api.openai.com/v1';
+
+    const cacheKey = `${this.id}::${this.config.baseURL}`;
+    const cached = dynamicModelsCache.get(cacheKey);
+
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.models;
+    }
+
+    try {
+      const baseURL = this.config.baseURL || 'https://api.openai.com/v1';
+      const modelsUrl = `${baseURL.replace(/\/+$/, '')}/models`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const res = await fetch(modelsUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.config.apiKey
+            ? { Authorization: `Bearer ${this.config.apiKey}` }
+            : {}),
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const data = await res.json();
+        const rawModels: any[] = Array.isArray(data.data)
+          ? data.data
+          : Array.isArray(data)
+            ? data
+            : [];
+
+        const dynamicChatModels: Model[] = [];
+        const dynamicEmbeddingModels: Model[] = [];
+
+        rawModels.forEach((m: any) => {
+          const modelId = m.id || m.key;
+          if (!modelId || typeof modelId !== 'string') return;
+
+          const isEmbedding =
+            modelId.toLowerCase().includes('embed') ||
+            m.architecture?.modality === 'text->embedding';
+
+          const modelObj: Model = {
+            key: modelId,
+            name: m.name || modelId,
+          };
+
+          if (isEmbedding) {
+            dynamicEmbeddingModels.push(modelObj);
+          } else {
+            dynamicChatModels.push(modelObj);
+          }
+        });
+
+        if (dynamicChatModels.length > 0 || dynamicEmbeddingModels.length > 0) {
+          dynamicChatModels.sort((a, b) => a.name.localeCompare(b.name));
+          dynamicEmbeddingModels.sort((a, b) => a.name.localeCompare(b.name));
+
+          const result: ModelList = {
+            embedding:
+              dynamicEmbeddingModels.length > 0
+                ? dynamicEmbeddingModels
+                : isStandardOpenAI
+                  ? defaultEmbeddingModels
+                  : [],
+            chat:
+              dynamicChatModels.length > 0
+                ? dynamicChatModels
+                : isStandardOpenAI
+                  ? defaultChatModels
+                  : [],
+          };
+
+          dynamicModelsCache.set(cacheKey, {
+            models: result,
+            timestamp: Date.now(),
+          });
+
+          return result;
+        }
+      }
+    } catch (err: any) {
+      console.warn(
+        `Failed to fetch dynamic models for provider ${this.id} (${this.config.baseURL}):`,
+        err.message || err,
+      );
+    }
+
+    if (cached) {
+      return cached.models;
+    }
+
+    if (isStandardOpenAI) {
       return {
         embedding: defaultEmbeddingModels,
         chat: defaultChatModels,
@@ -151,14 +269,22 @@ class OpenAIProvider extends BaseModelProvider<OpenAIConfig> {
 
   async getModelList(): Promise<ModelList> {
     const defaultModels = await this.getDefaultModels();
-    const configProvider = getConfiguredModelProviderById(this.id)!;
+    const configProvider = getConfiguredModelProviderById(this.id);
+
+    const userChatModels = configProvider?.chatModels || [];
+    const userEmbeddingModels = configProvider?.embeddingModels || [];
+
+    const chatMap = new Map<string, Model>();
+    defaultModels.chat.forEach((m) => chatMap.set(m.key, m));
+    userChatModels.forEach((m) => chatMap.set(m.key, m));
+
+    const embedMap = new Map<string, Model>();
+    defaultModels.embedding.forEach((m) => embedMap.set(m.key, m));
+    userEmbeddingModels.forEach((m) => embedMap.set(m.key, m));
 
     return {
-      embedding: [
-        ...defaultModels.embedding,
-        ...configProvider.embeddingModels,
-      ],
-      chat: [...defaultModels.chat, ...configProvider.chatModels],
+      embedding: Array.from(embedMap.values()),
+      chat: Array.from(chatMap.values()),
     };
   }
 
@@ -167,7 +293,7 @@ class OpenAIProvider extends BaseModelProvider<OpenAIConfig> {
 
     const exists = modelList.chat.find((m) => m.key === key);
 
-    if (!exists) {
+    if (!exists && this.config.baseURL === 'https://api.openai.com/v1') {
       throw new Error(
         'Error Loading OpenAI Chat Model. Invalid Model Selected',
       );

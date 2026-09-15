@@ -3,6 +3,7 @@ import { ArrowUp } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import AttachSmall from './MessageInputActions/AttachSmall';
+import ModelSelector from './MessageInputActions/ChatModelSelector';
 import VoiceRecorderButton from './VoiceRecorderButton';
 import { useChat } from '@/lib/hooks/useChat';
 
@@ -69,6 +70,7 @@ const MessageInput = () => {
       {mode === 'single' && (
         <div className="flex items-center space-x-0.5 mr-1">
           <AttachSmall />
+          <ModelSelector />
           <VoiceRecorderButton
             onTranscribed={(text) => {
               setMessage((prev) => (prev ? `${prev.trim()} ${text}` : text));
@@ -99,6 +101,7 @@ const MessageInput = () => {
         <div className="flex flex-row items-center justify-between w-full pt-2">
           <div className="flex items-center space-x-0.5">
             <AttachSmall />
+            <ModelSelector />
             <VoiceRecorderButton
               onTranscribed={(text) => {
                 setMessage((prev) => (prev ? `${prev.trim()} ${text}` : text));

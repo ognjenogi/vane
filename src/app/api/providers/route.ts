@@ -1,8 +1,14 @@
 import ModelRegistry from '@/lib/models/registry';
+import { clearOpenAIModelCache } from '@/lib/models/providers/openai';
 import { NextRequest } from 'next/server';
 
 export const GET = async (req: Request) => {
   try {
+    const url = new URL(req.url);
+    if (url.searchParams.get('refresh') === 'true') {
+      clearOpenAIModelCache();
+    }
+
     const registry = new ModelRegistry();
 
     const activeProviders = await registry.getActiveProviders();

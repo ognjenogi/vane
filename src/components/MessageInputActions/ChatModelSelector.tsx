@@ -1,6 +1,6 @@
 'use client';
 
-import { Cpu, Loader2, Search } from 'lucide-react';
+import { Cpu, Loader2, Search, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
 import { useEffect, useMemo, useState } from 'react';
@@ -36,6 +36,36 @@ const ModelSelector = () => {
 
     loadProviders();
   }, []);
+
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const currentModel = useMemo(() => {
+    if (!chatModelProvider?.providerId || !chatModelProvider?.key) return null;
+    for (const p of providers) {
+      if (p.id === chatModelProvider.providerId) {
+        const found = p.chatModels.find((m) => m.key === chatModelProvider.key);
+        if (found) return { providerName: p.name, modelName: found.name };
+      }
+    }
+    return null;
+  }, [providers, chatModelProvider]);
+
+  const handleRefresh = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      setIsRefreshing(true);
+      const res = await fetch('/api/providers?refresh=true');
+      if (res.ok) {
+        const data = await res.json();
+        setProviders(data.providers);
+      }
+    } catch (err) {
+      console.error('Failed to refresh models:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const orderedProviders = useMemo(() => {
     if (!chatModelProvider?.providerId) return providers;
@@ -79,6 +109,11 @@ const ModelSelector = () => {
         <>
           <PopoverButton
             type="button"
+            title={
+              currentModel
+                ? `Model: ${currentModel.modelName} (${currentModel.providerName})`
+                : 'Select Chat Model'
+            }
             className="active:border-none hover:bg-light-200  hover:dark:bg-dark-200 p-2 rounded-lg focus:outline-none headless-open:text-black dark:headless-open:text-white text-black/50 dark:text-white/50 active:scale-95 transition duration-200 hover:text-black dark:hover:text-white"
           >
             <Cpu size={16} className="text-sky-500" />
@@ -96,20 +131,32 @@ const ModelSelector = () => {
                   transition={{ duration: 0.1, ease: 'easeOut' }}
                   className="origin-top-right bg-light-primary dark:bg-dark-primary max-h-[300px] sm:max-w-none border rounded-lg border-light-200 dark:border-dark-200 w-full flex flex-col shadow-lg overflow-hidden"
                 >
-                  <div className="p-2 border-b border-light-200 dark:border-dark-200">
-                    <div className="relative">
+                  <div className="p-2 border-b border-light-200 dark:border-dark-200 flex items-center gap-1.5">
+                    <div className="relative flex-1">
                       <Search
-                        size={16}
-                        className="absolute left-3 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40"
+                        size={15}
+                        className="absolute left-2.5 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40"
                       />
                       <input
                         type="text"
                         placeholder="Search models..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-8 pr-3 py-2 bg-light-secondary dark:bg-dark-secondary rounded-lg placeholder:text-xs placeholder:-translate-y-[1.5px] text-xs text-black dark:text-white placeholder:text-black/40 dark:placeholder:text-white/40 focus:outline-none border border-transparent transition duration-200"
+                        className="w-full pl-8 pr-2 py-1.5 bg-light-secondary dark:bg-dark-secondary rounded-lg placeholder:text-xs text-xs text-black dark:text-white placeholder:text-black/40 dark:placeholder:text-white/40 focus:outline-none border border-transparent transition duration-200"
                       />
                     </div>
+                    <button
+                      type="button"
+                      onClick={handleRefresh}
+                      disabled={isRefreshing || isLoading}
+                      className="p-1.5 rounded-md hover:bg-light-secondary dark:hover:bg-dark-secondary text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white transition disabled:opacity-50"
+                      title="Refresh models from OpenRouter / providers"
+                    >
+                      <RefreshCw
+                        size={13}
+                        className={isRefreshing ? 'animate-spin text-sky-500' : ''}
+                      />
+                    </button>
                   </div>
 
                   <div className="max-h-[320px] overflow-y-auto">
