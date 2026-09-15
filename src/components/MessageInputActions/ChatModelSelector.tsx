@@ -184,14 +184,14 @@ const ModelSelector = ({
   const placementClasses = useMemo(() => {
     switch (placement) {
       case 'top-start':
-        return 'bottom-full mb-2 left-0 origin-bottom-left';
+        return 'sm:bottom-full sm:mb-2 sm:left-0 sm:origin-bottom-left';
       case 'top-end':
-        return 'bottom-full mb-2 right-0 origin-bottom-right';
+        return 'sm:bottom-full sm:mb-2 sm:right-0 sm:origin-bottom-right';
       case 'bottom-start':
-        return 'top-full mt-2 left-0 origin-top-left';
+        return 'sm:top-full sm:mt-2 sm:left-0 sm:origin-top-left';
       case 'bottom-end':
       default:
-        return 'top-full mt-2 right-0 origin-top-right';
+        return 'sm:top-full sm:mt-2 sm:right-0 sm:origin-top-right';
     }
   }, [placement]);
 
@@ -212,7 +212,7 @@ const ModelSelector = ({
                 : 'Select Chat Model'
             }
             className={cn(
-              'group flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium focus:outline-none transition duration-150 active:scale-95 cursor-pointer',
+              'group flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium focus:outline-none transition duration-150 active:scale-95 cursor-pointer',
               compact
                 ? 'p-2 rounded-lg text-black/50 dark:text-white/50 hover:bg-light-200 dark:hover:bg-dark-200 hover:text-black dark:hover:text-white'
                 : 'text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white bg-light-200/50 dark:bg-dark-200/50 hover:bg-light-200 dark:hover:bg-dark-200 border border-light-200 dark:border-dark-200/60 shadow-xs',
@@ -221,7 +221,7 @@ const ModelSelector = ({
             <Cpu size={14} className="text-sky-500 shrink-0" />
             {!compact && (
               <>
-                <span className="max-w-[110px] sm:max-w-[140px] truncate">
+                <span className="max-w-[75px] xs:max-w-[100px] sm:max-w-[140px] truncate">
                   {displayName}
                 </span>
                 <ChevronDown
@@ -237,83 +237,107 @@ const ModelSelector = ({
 
           <AnimatePresence>
             {open && (
-              <PopoverPanel
-                className={cn(
-                  'absolute z-50 w-[320px] sm:w-[380px] md:w-[410px]',
-                  placementClasses,
-                )}
-                static
-              >
+              <>
+                {/* Mobile Backdrop */}
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.96 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96 }}
-                  transition={{ duration: 0.12, ease: 'easeOut' }}
-                  className="bg-light-primary dark:bg-dark-primary border rounded-xl border-light-200 dark:border-dark-200/80 w-full flex flex-col shadow-2xl overflow-hidden backdrop-blur-md"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={close}
+                  className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 sm:hidden"
+                />
+
+                <PopoverPanel
+                  className={cn(
+                    // Mobile: Full-width fixed bottom sheet drawer
+                    'fixed inset-x-0 bottom-0 z-50 max-h-[85vh] flex flex-col',
+                    // Desktop: Absolute popover relative to button
+                    'sm:absolute sm:inset-auto sm:z-50 sm:w-[380px] md:sm:w-[410px] sm:max-h-none',
+                    placementClasses,
+                  )}
+                  static
                 >
-                  {/* Search and Refresh Header */}
-                  <div className="p-2.5 border-b border-light-200 dark:border-dark-200/60 flex items-center gap-2 bg-light-secondary/40 dark:bg-dark-secondary/30">
-                    <div className="relative flex-1">
-                      <Search
-                        size={14}
-                        className="absolute left-2.5 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Search models..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        autoFocus
-                        className="w-full pl-8 pr-7 py-1.5 bg-light-secondary dark:bg-dark-secondary rounded-lg placeholder:text-xs text-xs text-black dark:text-white placeholder:text-black/40 dark:placeholder:text-white/40 focus:outline-none border border-transparent focus:border-sky-500/40 transition duration-150"
-                      />
-                      {searchQuery && (
-                        <button
-                          type="button"
-                          onClick={() => setSearchQuery('')}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:text-black dark:hover:text-white cursor-pointer"
-                        >
-                          <X size={13} />
-                        </button>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleRefresh}
-                      disabled={isRefreshing || isLoading}
-                      className="p-2 rounded-lg hover:bg-light-secondary dark:hover:bg-dark-secondary text-black/50 dark:text-white/50 hover:text-sky-500 dark:hover:text-sky-400 transition disabled:opacity-50 cursor-pointer"
-                      title="Sync live models from OpenRouter"
-                    >
-                      <RefreshCw
-                        size={14}
-                        className={isRefreshing ? 'animate-spin text-sky-500' : ''}
-                      />
-                    </button>
-                  </div>
+                  <motion.div
+                    initial={{ opacity: 0, y: 30, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 30, scale: 0.98 }}
+                    transition={{ duration: 0.15, ease: 'easeOut' }}
+                    className="bg-light-primary dark:bg-dark-primary border-t sm:border border-light-200 dark:border-dark-200/80 rounded-t-2xl sm:rounded-xl w-full flex flex-col shadow-2xl overflow-hidden backdrop-blur-md max-h-[82vh] sm:max-h-[460px] pb-5 sm:pb-0"
+                  >
+                    {/* Mobile drag handle bar */}
+                    <div className="w-10 h-1 bg-black/20 dark:bg-white/20 rounded-full mx-auto my-2.5 sm:hidden shrink-0" />
 
-                  {/* Category Filter Chips */}
-                  <div className="px-2.5 py-2 border-b border-light-200/70 dark:border-dark-200/50 flex items-center gap-1 overflow-x-auto no-scrollbar">
-                    {CATEGORIES.map((cat) => (
-                      <button
-                        key={cat.id}
-                        type="button"
-                        onClick={() => setSelectedCategory(cat.id)}
-                        className={cn(
-                          'px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition cursor-pointer',
-                          selectedCategory === cat.id
-                            ? 'bg-sky-500 text-white shadow-xs'
-                            : 'bg-light-secondary dark:bg-dark-secondary/60 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white hover:bg-light-200 dark:hover:bg-dark-200',
+                    {/* Search and Refresh Header */}
+                    <div className="p-2.5 border-b border-light-200 dark:border-dark-200/60 flex items-center gap-2 bg-light-secondary/40 dark:bg-dark-secondary/30">
+                      <div className="relative flex-1">
+                        <Search
+                          size={14}
+                          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Search models..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          autoFocus
+                          className="w-full pl-8 pr-7 py-1.5 bg-light-secondary dark:bg-dark-secondary rounded-lg placeholder:text-xs text-xs text-black dark:text-white placeholder:text-black/40 dark:placeholder:text-white/40 focus:outline-none border border-transparent focus:border-sky-500/40 transition duration-150"
+                        />
+                        {searchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setSearchQuery('')}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:text-black dark:hover:text-white cursor-pointer"
+                          >
+                            <X size={13} />
+                          </button>
                         )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRefresh}
+                        disabled={isRefreshing || isLoading}
+                        className="p-2 rounded-lg hover:bg-light-secondary dark:hover:bg-dark-secondary text-black/50 dark:text-white/50 hover:text-sky-500 dark:hover:text-sky-400 transition disabled:opacity-50 cursor-pointer shrink-0"
+                        title="Sync live models from OpenRouter"
                       >
-                        {cat.label}
+                        <RefreshCw
+                          size={14}
+                          className={isRefreshing ? 'animate-spin text-sky-500' : ''}
+                        />
                       </button>
-                    ))}
-                    <div className="ml-auto pl-2 text-[10px] text-black/40 dark:text-white/40 whitespace-nowrap shrink-0">
-                      {totalModelCount} models
+                      <button
+                        type="button"
+                        onClick={close}
+                        className="p-2 rounded-lg hover:bg-light-secondary dark:hover:bg-dark-secondary text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white transition sm:hidden shrink-0 cursor-pointer"
+                        title="Close"
+                      >
+                        <X size={16} />
+                      </button>
                     </div>
-                  </div>
 
-                  {/* Scrollable Models List */}
-                  <div className="max-h-[320px] overflow-y-auto divide-y divide-light-200/40 dark:divide-dark-200/40">
+                    {/* Category Filter Chips */}
+                    <div className="px-2.5 py-2 border-b border-light-200/70 dark:border-dark-200/50 flex items-center gap-1 overflow-x-auto no-scrollbar">
+                      {CATEGORIES.map((cat) => (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => setSelectedCategory(cat.id)}
+                          className={cn(
+                            'px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition cursor-pointer',
+                            selectedCategory === cat.id
+                              ? 'bg-sky-500 text-white shadow-xs'
+                              : 'bg-light-secondary dark:bg-dark-secondary/60 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white hover:bg-light-200 dark:hover:bg-dark-200',
+                          )}
+                        >
+                          {cat.label}
+                        </button>
+                      ))}
+                      <div className="ml-auto pl-2 text-[10px] text-black/40 dark:text-white/40 whitespace-nowrap shrink-0">
+                        {totalModelCount} models
+                      </div>
+                    </div>
+
+                    {/* Scrollable Models List */}
+                    <div className="flex-1 max-h-[60vh] sm:max-h-[320px] overflow-y-auto divide-y divide-light-200/40 dark:divide-dark-200/40">
                     {isLoading ? (
                       <div className="flex flex-col items-center justify-center py-12 gap-2">
                         <Loader2

@@ -204,22 +204,43 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
   }
 
   async generateObject<T>(input: GenerateObjectInput): Promise<T> {
-    const response = await this.openAIClient.chat.completions.parse({
-      messages: this.convertToOpenAIMessages(input.messages),
-      model: this.config.model,
-      temperature:
-        input.options?.temperature ?? this.config.options?.temperature ?? 1.0,
-      top_p: input.options?.topP ?? this.config.options?.topP,
-      max_completion_tokens:
-        input.options?.maxTokens ?? this.config.options?.maxTokens,
-      stop: input.options?.stopSequences ?? this.config.options?.stopSequences,
-      frequency_penalty:
-        input.options?.frequencyPenalty ??
-        this.config.options?.frequencyPenalty,
-      presence_penalty:
-        input.options?.presencePenalty ?? this.config.options?.presencePenalty,
-      response_format: zodResponseFormat(input.schema, 'object'),
-    });
+    let response: any;
+    try {
+      response = await this.openAIClient.chat.completions.parse({
+        messages: this.convertToOpenAIMessages(input.messages),
+        model: this.config.model,
+        temperature:
+          input.options?.temperature ?? this.config.options?.temperature ?? 1.0,
+        top_p: input.options?.topP ?? this.config.options?.topP,
+        max_completion_tokens:
+          input.options?.maxTokens ?? this.config.options?.maxTokens,
+        stop: input.options?.stopSequences ?? this.config.options?.stopSequences,
+        frequency_penalty:
+          input.options?.frequencyPenalty ??
+          this.config.options?.frequencyPenalty,
+        presence_penalty:
+          input.options?.presencePenalty ?? this.config.options?.presencePenalty,
+        response_format: zodResponseFormat(input.schema, 'object'),
+      });
+    } catch (parseErr: any) {
+      // Fallback for models/providers (like certain OpenRouter models) that reject json_schema
+      try {
+        response = await this.openAIClient.chat.completions.create({
+          messages: this.convertToOpenAIMessages(input.messages),
+          model: this.config.model,
+          temperature:
+            input.options?.temperature ?? this.config.options?.temperature ?? 1.0,
+          response_format: { type: 'json_object' },
+        });
+      } catch (jsonErr: any) {
+        response = await this.openAIClient.chat.completions.create({
+          messages: this.convertToOpenAIMessages(input.messages),
+          model: this.config.model,
+          temperature:
+            input.options?.temperature ?? this.config.options?.temperature ?? 1.0,
+        });
+      }
+    }
 
     if (response.choices && response.choices.length > 0) {
       try {
