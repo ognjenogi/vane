@@ -6,7 +6,7 @@ import { SearchSources } from '@/lib/agents/search/types';
 import APISearchAgent from '@/lib/agents/search/api';
 
 interface ChatRequestBody {
-  optimizationMode: 'speed' | 'balanced' | 'quality';
+  optimizationMode: 'speed' | 'balanced' | 'quality' | 'superfast';
   sources: SearchSources[];
   chatModel: ModelWithProvider;
   embeddingModel: ModelWithProvider;

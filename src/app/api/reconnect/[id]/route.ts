@@ -17,63 +17,55 @@ export const POST = async (
     const writer = responseStream.writable.getWriter();
     const encoder = new TextEncoder();
 
-    const disconnect = session.subscribe((event, data) => {
+    let closed = false;
+    let heartbeat: NodeJS.Timeout | undefined;
+    let disconnect: () => void = () => {};
+
+    const write = (payload: unknown) => {
+      if (closed) return;
+      writer
+        .write(encoder.encode(JSON.stringify(payload) + '\n'))
+        .catch(() => {});
+    };
+
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      disconnect();
+      clearInterval(heartbeat);
+      try {
+        writer.close();
+      } catch {}
+    };
+
+    heartbeat = setInterval(() => write({ type: 'ping' }), 10000);
+
+    disconnect = session.subscribe((event, data) => {
       if (event === 'data') {
         if (data.type === 'block') {
-          writer.write(
-            encoder.encode(
-              JSON.stringify({
-                type: 'block',
-                block: data.block,
-              }) + '\n',
-            ),
-          );
+          write({ type: 'block', block: data.block });
         } else if (data.type === 'updateBlock') {
-          writer.write(
-            encoder.encode(
-              JSON.stringify({
-                type: 'updateBlock',
-                blockId: data.blockId,
-                patch: data.patch,
-              }) + '\n',
-            ),
-          );
+          write({
+            type: 'updateBlock',
+            blockId: data.blockId,
+            patch: data.patch,
+          });
         } else if (data.type === 'researchComplete') {
-          writer.write(
-            encoder.encode(
-              JSON.stringify({
-                type: 'researchComplete',
-              }) + '\n',
-            ),
-          );
+          write({ type: 'researchComplete' });
         }
       } else if (event === 'end') {
-        writer.write(
-          encoder.encode(
-            JSON.stringify({
-              type: 'messageEnd',
-            }) + '\n',
-          ),
-        );
-        writer.close();
-        disconnect();
+        write({ type: 'messageEnd' });
+        closeStream();
       } else if (event === 'error') {
-        writer.write(
-          encoder.encode(
-            JSON.stringify({
-              type: 'error',
-              data: data.data,
-            }) + '\n',
-          ),
-        );
-        writer.close();
-        disconnect();
+        write({ type: 'error', data: data.data });
+        closeStream();
       }
     });
 
+    if (closed) disconnect();
+
     req.signal.addEventListener('abort', () => {
-      disconnect();
-      writer.close();
+      closeStream();
     });
 
     return new Response(responseStream.readable, {

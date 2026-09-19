@@ -34,7 +34,11 @@ export const executeSearch = async (input: {
     },
   ]);
 
-  if (input.mode === 'speed' || input.mode === 'balanced') {
+  if (
+    input.mode === 'speed' ||
+    input.mode === 'balanced' ||
+    input.mode === 'superfast'
+  ) {
     const searchResultsBlockId = crypto.randomUUID();
     let searchResultsEmitted = false;
 

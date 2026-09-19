@@ -39,3 +39,5 @@ db.sqlite
 /searxng
 
 certificates
+# Local data (chat DB, user history)
+/data/

@@ -68,6 +68,9 @@ const webSearchAction: ResearchAction<typeof actionSchema> = {
       case 'speed':
         prompt = speedModePrompt;
         break;
+      case 'superfast':
+        prompt = speedModePrompt;
+        break;
       case 'balanced':
         prompt = balancedModePrompt;
         break;

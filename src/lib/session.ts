@@ -15,11 +15,23 @@ class SessionManager {
   private events: { event: string; data: any }[] = [];
   private emitter = new EventEmitter();
   private TTL_MS = 30 * 60 * 1000;
+  private static readonly UPDATE_THROTTLE_MS = 100;
+  private pendingUpdates = new Map<
+    string,
+    {
+      data: { type: string; blockId: string; patch: unknown[] };
+      timer: NodeJS.Timeout;
+    }
+  >();
 
   constructor(id?: string) {
     this.id = id ?? crypto.randomUUID();
 
     setTimeout(() => {
+      for (const [, entry] of this.pendingUpdates) {
+        clearTimeout(entry.timer);
+      }
+      this.pendingUpdates.clear();
       SessionManager.sessions.delete(this.id);
     }, this.TTL_MS);
   }
@@ -42,9 +54,24 @@ class SessionManager {
     this.emitter.removeAllListeners();
   }
 
-  emit(event: string, data: any) {
+  private dispatch(event: string, data: unknown) {
     this.emitter.emit(event, data);
     this.events.push({ event, data });
+  }
+
+  private flushPendingUpdates() {
+    for (const [, entry] of this.pendingUpdates) {
+      clearTimeout(entry.timer);
+      this.dispatch('data', entry.data);
+    }
+    this.pendingUpdates.clear();
+  }
+
+  emit(event: string, data: unknown) {
+    if (event === 'end' || event === 'error') {
+      this.flushPendingUpdates();
+    }
+    this.dispatch(event, data);
   }
 
   emitBlock(block: Block) {
@@ -62,15 +89,33 @@ class SessionManager {
   updateBlock(blockId: string, patch: any[]) {
     const block = this.blocks.get(blockId);
 
-    if (block) {
-      applyPatch(block, patch);
-      this.blocks.set(blockId, block);
-      this.emit('data', {
-        type: 'updateBlock',
-        blockId: blockId,
-        patch: patch,
-      });
+    if (!block) return;
+
+    applyPatch(block, patch);
+    this.blocks.set(blockId, block);
+
+    const data: { type: string; blockId: string; patch: unknown[] } = {
+      type: 'updateBlock',
+      blockId: blockId,
+      patch: patch,
+    };
+
+    const pending = this.pendingUpdates.get(blockId);
+
+    if (pending) {
+      pending.data = data;
+      return;
     }
+
+    this.pendingUpdates.set(blockId, {
+      data,
+      timer: setTimeout(() => {
+        const entry = this.pendingUpdates.get(blockId);
+        if (!entry) return;
+        this.pendingUpdates.delete(blockId);
+        this.dispatch('data', entry.data);
+      }, SessionManager.UPDATE_THROTTLE_MS),
+    });
   }
 
   getAllBlocks() {

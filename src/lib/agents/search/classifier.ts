@@ -34,7 +34,10 @@ const schema = z.object({
     ),
 });
 
-export const classify = async (input: ClassifierInput) => {
+export const classify = async (
+  input: ClassifierInput,
+  timeoutMs: number = 4000,
+) => {
   try {
     const output = await Promise.race([
       input.llm.generateObject<typeof schema>({
@@ -51,7 +54,11 @@ export const classify = async (input: ClassifierInput) => {
         schema,
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Classification timed out after 4s')), 4000)
+        setTimeout(
+          () =>
+            reject(new Error(`Classification timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        ),
       ),
     ]);
 
@@ -69,6 +76,7 @@ export const classify = async (input: ClassifierInput) => {
         showCalculationWidget: false,
       },
       standaloneFollowUp: input.query,
+      degraded: true,
     };
   }
 };

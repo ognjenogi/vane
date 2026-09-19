@@ -12,12 +12,13 @@ class Researcher {
     input: ResearcherInput,
   ): Promise<ResearcherOutput> {
     let actionOutput: ActionOutput[] = [];
-    let maxIteration =
-      input.config.mode === 'speed'
-        ? 1
-        : input.config.mode === 'balanced'
-          ? 2
-          : 3;
+    const maxIterationsByMode = {
+      superfast: 1,
+      speed: 1,
+      balanced: 2,
+      quality: 3,
+    } as const;
+    let maxIteration = maxIterationsByMode[input.config.mode];
 
     const availableTools = ActionRegistry.getAvailableActionTools({
       classification: input.classification,

@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronDown, Sliders, Star, Zap } from 'lucide-react';
+import { ChevronDown, Rocket, Sliders, Star, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
 import { useChat } from '@/lib/hooks/useChat';
@@ -12,6 +12,13 @@ export const OptimizationModes = [
     title: 'Speed',
     description: 'Prioritize speed and get the quickest possible answer.',
     icon: <Zap size={15} className="text-[#FF9800]" />,
+  },
+  {
+    key: 'superfast',
+    title: 'SuperFast',
+    description:
+      'Skips the search when the question needs no fresh info, otherwise does one quick search.',
+    icon: <Rocket size={15} className="text-[#E91E63]" />,
   },
   {
     key: 'balanced',

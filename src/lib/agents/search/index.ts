@@ -7,7 +7,8 @@ import { WidgetExecutor } from './widgets';
 import db from '@/lib/db';
 import { messages } from '@/lib/db/schema';
 import { and, eq, gt } from 'drizzle-orm';
-import { TextBlock } from '@/lib/types';
+import { streamAnswer } from './answerStream';
+import { runSuperfast } from './superfast';
 import { getTokenCount } from '@/lib/utils/splitText';
 
 class SearchAgent {
@@ -55,12 +56,15 @@ class SearchAgent {
     try {
       let classification;
       try {
-        classification = await classify({
-          chatHistory: input.chatHistory,
-          enabledSources: input.config.sources,
-          query: input.followUp,
-          llm: input.config.llm,
-        });
+        classification = await classify(
+          {
+            chatHistory: input.chatHistory,
+            enabledSources: input.config.sources,
+            query: input.followUp,
+            llm: input.config.llm,
+          },
+          input.config.mode === 'superfast' ? 2500 : 4000,
+        );
       } catch (err) {
         console.warn('Classification failed, using defaults:', err);
         classification = {
@@ -74,92 +78,103 @@ class SearchAgent {
             showCalculationWidget: false,
           },
           standaloneFollowUp: input.followUp,
+          degraded: true,
         };
       }
 
-      const widgetPromise = WidgetExecutor.executeAll({
-        classification,
-        chatHistory: input.chatHistory,
-        followUp: input.followUp,
-        llm: input.config.llm,
-      })
-        .then((widgetOutputs) => {
-          widgetOutputs.forEach((o) => {
-            session.emitBlock({
-              id: crypto.randomUUID(),
-              type: 'widget',
-              data: {
-                widgetType: o.type,
-                params: o.data,
-              },
-            });
-          });
-          return widgetOutputs;
-        })
-        .catch((err) => {
-          console.error('Widget execution failed:', err);
-          return [];
+      if (input.config.mode === 'superfast') {
+        await runSuperfast({
+          session,
+          agentInput: input,
+          classification,
         });
-
-      let searchPromise: Promise<ResearcherOutput | null> = Promise.resolve(null);
-
-      if (!classification.classification.skipSearch) {
-        const researcher = new Researcher();
-        searchPromise = researcher
-          .research(session, {
-            chatHistory: input.chatHistory,
-            followUp: input.followUp,
-            classification: classification,
-            config: input.config,
+      } else {
+        const widgetPromise = WidgetExecutor.executeAll({
+          classification,
+          chatHistory: input.chatHistory,
+          followUp: input.followUp,
+          llm: input.config.llm,
+        })
+          .then((widgetOutputs) => {
+            widgetOutputs.forEach((o) => {
+              session.emitBlock({
+                id: crypto.randomUUID(),
+                type: 'widget',
+                data: {
+                  widgetType: o.type,
+                  params: o.data,
+                },
+              });
+            });
+            return widgetOutputs;
           })
           .catch((err) => {
-            console.error('Researcher failed:', err);
-            return null;
+            console.error('Widget execution failed:', err);
+            return [];
           });
-      }
 
-      const [widgetOutputs, searchResults] = await Promise.all([
-        widgetPromise,
-        searchPromise,
-      ]);
+        let searchPromise: Promise<ResearcherOutput | null> =
+          Promise.resolve(null);
 
-      session.emit('data', {
-        type: 'researchComplete',
-      });
+        if (!classification.classification.skipSearch) {
+          const researcher = new Researcher();
+          searchPromise = researcher
+            .research(session, {
+              chatHistory: input.chatHistory,
+              followUp: input.followUp,
+              classification: classification,
+              config: input.config,
+            })
+            .catch((err) => {
+              console.error('Researcher failed:', err);
+              return null;
+            });
+        }
 
-      const didSkipSearch = classification.classification.skipSearch;
+        const [widgetOutputs, searchResults] = await Promise.all([
+          widgetPromise,
+          searchPromise,
+        ]);
 
-      let finalContext =
-        '<Query to be answered without searching; Search not made>';
+        session.emit('data', {
+          type: 'researchComplete',
+        });
 
-      if (searchResults) {
-        finalContext = searchResults.searchFindings
-          .map(
-            (f, index) =>
-              `<result index=${index + 1} title=${f.metadata.title}>${f.content}</result>`,
-          )
-          .join('\n');
-      }
+        const didSkipSearch = classification.classification.skipSearch;
 
-      const hasSearchResults = !!searchResults && searchResults.searchFindings.length > 0;
+        let finalContext =
+          '<Query to be answered without searching; Search not made>';
 
-      const widgetContext = widgetOutputs
-        .map((o) => {
-          return `<result>${o.llmContext}</result>`;
-        })
-        .join('\n-------------\n');
+        if (searchResults) {
+          finalContext = searchResults.searchFindings
+            .map(
+              (f, index) =>
+                `<result index=${index + 1} title=${f.metadata.title}>${f.content}</result>`,
+            )
+            .join('\n');
+        }
 
-      const finalContextWithWidgets = `<search_results note="These are the search results and assistant can cite these">\n${finalContext}\n</search_results>\n<widgets_result noteForAssistant="Its output is already showed to the user, assistant can use this information to answer the query but do not CITE this as a souce">\n${widgetContext}\n</widgets_result>`;
+        const hasSearchResults =
+          !!searchResults && searchResults.searchFindings.length > 0;
 
-      const writerPrompt = getWriterPrompt(
-        finalContextWithWidgets,
-        input.config.systemInstructions,
-        input.config.mode,
-        hasSearchResults,
-      );
+        const widgetContext = widgetOutputs
+          .map((o) => {
+            return `<result>${o.llmContext}</result>`;
+          })
+          .join('\n-------------\n');
 
-      try {
-        const answerStream = input.config.llm.streamText({
+        const finalContextWithWidgets = `<search_results note="These are the search results and assistant can cite these">\n${finalContext}\n</search_results>\n<widgets_result noteForAssistant="Its output is already showed to the user, assistant can use this information to answer the query but do not CITE this as a souce">\n${widgetContext}\n</widgets_result>`;
+
+        const writerPrompt = getWriterPrompt(
+          finalContextWithWidgets,
+          input.config.systemInstructions,
+          input.config.mode,
+          hasSearchResults,
+        );
+
+        await streamAnswer({
+          session,
+          llm: input.config.llm,
           messages: [
             {
               role: 'system',
@@ -171,47 +186,6 @@ class SearchAgent {
               content: input.followUp,
             },
           ],
-        });
-
-        let responseBlockId = '';
-
-        for await (const chunk of answerStream) {
-          if (!responseBlockId) {
-            const block: TextBlock = {
-              id: crypto.randomUUID(),
-              type: 'text',
-              data: chunk.contentChunk,
-            };
-
-            session.emitBlock(block);
-
-            responseBlockId = block.id;
-          } else {
-            const block = session.getBlock(responseBlockId) as TextBlock | null;
-
-            if (!block) {
-              continue;
-            }
-
-            block.data += chunk.contentChunk;
-
-            session.updateBlock(block.id, [
-              {
-                op: 'replace',
-                path: '/data',
-                value: block.data,
-              },
-            ]);
-          }
-        }
-      } catch (streamErr) {
-        console.error('Answer streaming failed:', streamErr);
-        const modelName = (input.config.llm as any)?.config?.model || 'selected model';
-        const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
-        session.emitBlock({
-          id: crypto.randomUUID(),
-          type: 'text',
-          data: `I encountered an issue generating the answer with model "${modelName}" (${errMsg}). Please select another model or try again.`,
         });
       }
 

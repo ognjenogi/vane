@@ -1,7 +1,7 @@
 'use client';
 
 /* eslint-disable @next/next/no-img-element */
-import React, { MutableRefObject } from 'react';
+import React, { MutableRefObject, useState } from 'react';
 import { cn } from '@/lib/utils';
 import {
   BookCopy,
@@ -11,6 +11,9 @@ import {
   Layers3,
   Plus,
   CornerDownRight,
+  Check,
+  Pencil,
+  X,
 } from 'lucide-react';
 import Markdown, { MarkdownToJSX, RuleType } from 'markdown-to-jsx';
 import Copy from './MessageActions/Copy';
@@ -53,6 +56,7 @@ const MessageBox = ({
   const {
     loading,
     sendMessage,
+    editMessage,
     rewrite,
     messages,
     researchEnded,
@@ -62,6 +66,9 @@ const MessageBox = ({
   const parsedMessage = section.parsedTextBlocks.join('\n\n');
   const speechMessage = section.speechMessage || '';
   const thinkingEnded = section.thinkingEnded;
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
 
   const sourceBlocks = section.message.responseBlocks.filter(
     (block): block is typeof block & { type: 'source' } =>
@@ -106,9 +113,54 @@ const MessageBox = ({
   return (
     <div className="space-y-6">
       <div className={'w-full pt-8 break-words'}>
-        <h2 className="text-black dark:text-white font-medium text-3xl lg:w-9/12">
-          {section.message.query}
-        </h2>
+        {editing ? (
+          <div className="flex flex-col space-y-2 lg:w-9/12">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+              autoFocus
+              className="w-full rounded-lg border border-light-200 dark:border-dark-200 bg-light-secondary dark:bg-dark-secondary px-3 py-2 text-black dark:text-white focus:outline-none resize-y"
+            />
+            <div className="flex flex-row items-center space-x-2">
+              <button
+                onClick={() => {
+                  setEditing(false);
+                  editMessage(section.message.messageId, draft);
+                }}
+                disabled={loading}
+                className="flex flex-row items-center space-x-1.5 rounded-full bg-sky-400 px-3 py-1.5 text-sm text-white transition duration-200 hover:bg-sky-500 disabled:opacity-50"
+              >
+                <Check size={14} />
+                <span>Save &amp; resend</span>
+              </button>
+              <button
+                onClick={() => setEditing(false)}
+                className="rounded-full p-2 text-black/70 dark:text-white/70 hover:bg-light-secondary dark:hover:bg-dark-secondary transition duration-200"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="group flex flex-row items-start justify-between lg:w-9/12">
+            <h2 className="text-black dark:text-white font-medium text-3xl">
+              {section.message.query}
+            </h2>
+            {!(loading && isLast) && (
+              <button
+                onClick={() => {
+                  setDraft(section.message.query);
+                  setEditing(true);
+                }}
+                title="Edit message"
+                className="p-2 mt-1 rounded-full text-black/40 dark:text-white/40 hover:bg-light-secondary dark:hover:bg-dark-secondary hover:text-black dark:hover:text-white transition duration-200 opacity-40 lg:opacity-0 lg:group-hover:opacity-100"
+              >
+                <Pencil size={16} />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col space-y-9 lg:space-y-0 lg:flex-row lg:justify-between lg:space-x-9">

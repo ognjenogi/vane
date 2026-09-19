@@ -1,0 +1,1628 @@
+--- a/src/app/api/chat/route.ts
++++ b/src/app/api/chat/route.ts
+@@ -33,8 +33,9 @@
+ 
+ const bodySchema = z.object({
+   message: messageSchema,
+-  optimizationMode: z.enum(['speed', 'balanced', 'quality'], {
+-    message: 'Optimization mode must be one of: speed, balanced, quality',
++  optimizationMode: z.enum(['speed', 'balanced', 'quality', 'superfast'], {
++    message:
++      'Optimization mode must be one of: speed, balanced, quality, superfast',
+   }),
+   sources: z.array(z.string()).optional().default([]),
+   history: z
+@@ -163,60 +164,57 @@
+     const writer = responseStream.writable.getWriter();
+     const encoder = new TextEncoder();
+ 
+-    const disconnect = session.subscribe((event: string, data: any) => {
++    let closed = false;
++    let heartbeat: NodeJS.Timeout | undefined;
++    let disconnect: () => void = () => {};
++
++    const write = (payload: unknown) => {
++      if (closed) return;
++      writer
++        .write(encoder.encode(JSON.stringify(payload) + '\n'))
++        .catch(() => {});
++    };
++
++    const closeStream = () => {
++      if (closed) return;
++      closed = true;
++      disconnect();
++      clearInterval(heartbeat);
++      try {
++        writer.close();
++      } catch {}
++    };
++
++    heartbeat = setInterval(() => write({ type: 'ping' }), 10000);
++
++    write({ type: 'sessionId', data: session.id });
++
++    disconnect = session.subscribe((event, data) => {
+       if (event === 'data') {
+         if (data.type === 'block') {
+-          writer.write(
+-            encoder.encode(
+-              JSON.stringify({
+-                type: 'block',
+-                block: data.block,
+-              }) + '\n',
+-            ),
+-          );
++          write({ type: 'block', block: data.block });
+         } else if (data.type === 'updateBlock') {
+-          writer.write(
+-            encoder.encode(
+-              JSON.stringify({
+-                type: 'updateBlock',
+-                blockId: data.blockId,
+-                patch: data.patch,
+-              }) + '\n',
+-            ),
+-          );
++          write({
++            type: 'updateBlock',
++            blockId: data.blockId,
++            patch: data.patch,
++          });
+         } else if (data.type === 'researchComplete') {
+-          writer.write(
+-            encoder.encode(
+-              JSON.stringify({
+-                type: 'researchComplete',
+-              }) + '\n',
+-            ),
+-          );
++          write({ type: 'researchComplete' });
+         }
+       } else if (event === 'end') {
+-        writer.write(
+-          encoder.encode(
+-            JSON.stringify({
+-              type: 'messageEnd',
+-            }) + '\n',
+-          ),
+-        );
+-        writer.close();
++        write({ type: 'messageEnd' });
++        closeStream();
+         session.removeAllListeners();
+       } else if (event === 'error') {
+-        writer.write(
+-          encoder.encode(
+-            JSON.stringify({
+-              type: 'error',
+-              data: data.data,
+-            }) + '\n',
+-          ),
+-        );
+-        writer.close();
++        write({ type: 'error', data: data.data });
++        closeStream();
+         session.removeAllListeners();
+       }
+     });
+ 
++    if (closed) disconnect();
++
+     let projectSystemInstructions = '';
+     let projectFileIds: string[] = [];
+     let effectiveProjectId = body.projectId || null;
+@@ -277,8 +275,7 @@
+     });
+ 
+     req.signal.addEventListener('abort', () => {
+-      disconnect();
+-      writer.close();
++      closeStream();
+     });
+ 
+     return new Response(responseStream.readable, {
+--- a/src/app/api/reconnect/[id]/route.ts
++++ b/src/app/api/reconnect/[id]/route.ts
+@@ -17,63 +17,55 @@
+     const writer = responseStream.writable.getWriter();
+     const encoder = new TextEncoder();
+ 
+-    const disconnect = session.subscribe((event, data) => {
++    let closed = false;
++    let heartbeat: NodeJS.Timeout | undefined;
++    let disconnect: () => void = () => {};
++
++    const write = (payload: unknown) => {
++      if (closed) return;
++      writer
++        .write(encoder.encode(JSON.stringify(payload) + '\n'))
++        .catch(() => {});
++    };
++
++    const closeStream = () => {
++      if (closed) return;
++      closed = true;
++      disconnect();
++      clearInterval(heartbeat);
++      try {
++        writer.close();
++      } catch {}
++    };
++
++    heartbeat = setInterval(() => write({ type: 'ping' }), 10000);
++
++    disconnect = session.subscribe((event, data) => {
+       if (event === 'data') {
+         if (data.type === 'block') {
+-          writer.write(
+-            encoder.encode(
+-              JSON.stringify({
+-                type: 'block',
+-                block: data.block,
+-              }) + '\n',
+-            ),
+-          );
++          write({ type: 'block', block: data.block });
+         } else if (data.type === 'updateBlock') {
+-          writer.write(
+-            encoder.encode(
+-              JSON.stringify({
+-                type: 'updateBlock',
+-                blockId: data.blockId,
+-                patch: data.patch,
+-              }) + '\n',
+-            ),
+-          );
++          write({
++            type: 'updateBlock',
++            blockId: data.blockId,
++            patch: data.patch,
++          });
+         } else if (data.type === 'researchComplete') {
+-          writer.write(
+-            encoder.encode(
+-              JSON.stringify({
+-                type: 'researchComplete',
+-              }) + '\n',
+-            ),
+-          );
++          write({ type: 'researchComplete' });
+         }
+       } else if (event === 'end') {
+-        writer.write(
+-          encoder.encode(
+-            JSON.stringify({
+-              type: 'messageEnd',
+-            }) + '\n',
+-          ),
+-        );
+-        writer.close();
+-        disconnect();
++        write({ type: 'messageEnd' });
++        closeStream();
+       } else if (event === 'error') {
+-        writer.write(
+-          encoder.encode(
+-            JSON.stringify({
+-              type: 'error',
+-              data: data.data,
+-            }) + '\n',
+-          ),
+-        );
+-        writer.close();
+-        disconnect();
++        write({ type: 'error', data: data.data });
++        closeStream();
+       }
+     });
+ 
++    if (closed) disconnect();
++
+     req.signal.addEventListener('abort', () => {
+-      disconnect();
+-      writer.close();
++      closeStream();
+     });
+ 
+     return new Response(responseStream.readable, {
+--- a/src/app/api/search/route.ts
++++ b/src/app/api/search/route.ts
+@@ -6,7 +6,7 @@
+ import APISearchAgent from '@/lib/agents/search/api';
+ 
+ interface ChatRequestBody {
+-  optimizationMode: 'speed' | 'balanced' | 'quality';
++  optimizationMode: 'speed' | 'balanced' | 'quality' | 'superfast';
+   sources: SearchSources[];
+   chatModel: ModelWithProvider;
+   embeddingModel: ModelWithProvider;
+--- a/src/app/api/version/route.ts
++++ b/src/app/api/version/route.ts
+@@ -0,0 +1,21 @@
++import { readFile } from 'fs/promises';
++import path from 'path';
++
++let cachedBuildId: string | null = null;
++
++// Returns the deployed build id so the client can detect that a new version
++// was deployed while the tab was open (stale chunks / server actions) and
++// reload itself.
++export const GET = async () => {
++  try {
++    if (!cachedBuildId) {
++      cachedBuildId = (
++        await readFile(path.join(process.cwd(), '.next', 'BUILD_ID'), 'utf-8')
++      ).trim();
++    }
++
++    return Response.json({ buildId: cachedBuildId });
++  } catch {
++    return Response.json({ buildId: null });
++  }
++};
+--- a/src/app/api/chats/[id]/messages/route.ts
++++ b/src/app/api/chats/[id]/messages/route.ts
+@@ -0,0 +1,54 @@
++import db from '@/lib/db';
++import { chats, messages } from '@/lib/db/schema';
++import { and, eq, gte } from 'drizzle-orm';
++
++// Deletes a message and every later message in the same chat (by insertion
++// order). Used by rewrite/edit so stale rows do not reappear after a reload.
++export const DELETE = async (
++  req: Request,
++  { params }: { params: Promise<{ id: string }> },
++) => {
++  try {
++    const { id: chatId } = await params;
++    const afterMessageId = new URL(req.url).searchParams.get('afterMessageId');
++
++    if (!afterMessageId) {
++      return Response.json(
++        { message: 'afterMessageId query parameter is required' },
++        { status: 400 },
++      );
++    }
++
++    const chatExists = await db.query.chats.findFirst({
++      where: eq(chats.id, chatId),
++    });
++
++    if (!chatExists) {
++      return Response.json({ message: 'Chat not found' }, { status: 404 });
++    }
++
++    const anchor = await db.query.messages.findFirst({
++      where: eq(messages.messageId, afterMessageId),
++    });
++
++    if (!anchor || anchor.chatId !== chatId) {
++      return Response.json({ message: 'Message not found' }, { status: 404 });
++    }
++
++    await db
++      .delete(messages)
++      .where(and(eq(messages.chatId, chatId), gte(messages.id, anchor.id)))
++      .execute();
++
++    return Response.json(
++      { message: 'Messages deleted successfully' },
++      { status: 200 },
++    );
++  } catch (err) {
++    console.error('Error in deleting messages: ', err);
++    return Response.json(
++      { message: 'An error has occurred.' },
++      { status: 500 },
++    );
++  }
++};
+--- a/src/components/Chat.tsx
++++ b/src/components/Chat.tsx
+@@ -7,7 +7,7 @@
+ import { useChat } from '@/lib/hooks/useChat';
+ 
+ const Chat = () => {
+-  const { sections, loading, messageAppeared, messages } = useChat();
++  const { sections, loading, messages } = useChat();
+ 
+   const [dividerWidth, setDividerWidth] = useState(0);
+   const dividerRef = useRef<HTMLDivElement | null>(null);
+@@ -58,6 +58,11 @@
+     }
+   }, [messages]);
+ 
++  const lastSection = sections[sections.length - 1];
++  const lastHasText = Boolean(
++    lastSection?.parsedTextBlocks.some((block) => block.trim().length > 0),
++  );
++
+   return (
+     <div className="flex flex-col space-y-6 pt-8 pb-44 lg:pb-28 sm:mx-4 md:mx-8">
+       {sections.map((section, i) => {
+@@ -77,7 +82,7 @@
+           </Fragment>
+         );
+       })}
+-      {loading && !messageAppeared && <MessageBoxLoading />}
++      {loading && !lastHasText && <MessageBoxLoading />}
+       <div ref={messageEnd} className="h-0" />
+       {dividerWidth > 0 && (
+         <div
+--- a/src/components/MessageInputActions/Optimization.tsx
++++ b/src/components/MessageInputActions/Optimization.tsx
+@@ -1,6 +1,6 @@
+ 'use client';
+ 
+-import { ChevronDown, Sliders, Star, Zap } from 'lucide-react';
++import { ChevronDown, Rocket, Sliders, Star, Zap } from 'lucide-react';
+ import { cn } from '@/lib/utils';
+ import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
+ import { useChat } from '@/lib/hooks/useChat';
+@@ -14,6 +14,13 @@
+     icon: <Zap size={15} className="text-[#FF9800]" />,
+   },
+   {
++    key: 'superfast',
++    title: 'SuperFast',
++    description:
++      'Skips the search when the question needs no fresh info, otherwise does one quick search.',
++    icon: <Rocket size={15} className="text-[#E91E63]" />,
++  },
++  {
+     key: 'balanced',
+     title: 'Balanced',
+     description: 'Find the right balance between speed and accuracy.',
+--- a/src/components/MessageBox.tsx
++++ b/src/components/MessageBox.tsx
+@@ -1,7 +1,7 @@
+ 'use client';
+ 
+ /* eslint-disable @next/next/no-img-element */
+-import React, { MutableRefObject } from 'react';
++import React, { MutableRefObject, useState } from 'react';
+ import { cn } from '@/lib/utils';
+ import {
+   BookCopy,
+@@ -11,6 +11,9 @@
+   Layers3,
+   Plus,
+   CornerDownRight,
++  Check,
++  Pencil,
++  X,
+ } from 'lucide-react';
+ import Markdown, { MarkdownToJSX, RuleType } from 'markdown-to-jsx';
+ import Copy from './MessageActions/Copy';
+@@ -53,6 +56,7 @@
+   const {
+     loading,
+     sendMessage,
++    editMessage,
+     rewrite,
+     messages,
+     researchEnded,
+@@ -63,6 +67,9 @@
+   const speechMessage = section.speechMessage || '';
+   const thinkingEnded = section.thinkingEnded;
+ 
++  const [editing, setEditing] = useState(false);
++  const [draft, setDraft] = useState('');
++
+   const sourceBlocks = section.message.responseBlocks.filter(
+     (block): block is typeof block & { type: 'source' } =>
+       block.type === 'source',
+@@ -106,9 +113,54 @@
+   return (
+     <div className="space-y-6">
+       <div className={'w-full pt-8 break-words'}>
+-        <h2 className="text-black dark:text-white font-medium text-3xl lg:w-9/12">
+-          {section.message.query}
+-        </h2>
++        {editing ? (
++          <div className="flex flex-col space-y-2 lg:w-9/12">
++            <textarea
++              value={draft}
++              onChange={(e) => setDraft(e.target.value)}
++              rows={Math.min(8, Math.max(2, draft.split('\n').length))}
++              autoFocus
++              className="w-full rounded-lg border border-light-200 dark:border-dark-200 bg-light-secondary dark:bg-dark-secondary px-3 py-2 text-black dark:text-white focus:outline-none resize-y"
++            />
++            <div className="flex flex-row items-center space-x-2">
++              <button
++                onClick={() => {
++                  setEditing(false);
++                  editMessage(section.message.messageId, draft);
++                }}
++                disabled={loading}
++                className="flex flex-row items-center space-x-1.5 rounded-full bg-sky-400 px-3 py-1.5 text-sm text-white transition duration-200 hover:bg-sky-500 disabled:opacity-50"
++              >
++                <Check size={14} />
++                <span>Save &amp; resend</span>
++              </button>
++              <button
++                onClick={() => setEditing(false)}
++                className="rounded-full p-2 text-black/70 dark:text-white/70 hover:bg-light-secondary dark:hover:bg-dark-secondary transition duration-200"
++              >
++                <X size={14} />
++              </button>
++            </div>
++          </div>
++        ) : (
++          <div className="group flex flex-row items-start justify-between lg:w-9/12">
++            <h2 className="text-black dark:text-white font-medium text-3xl">
++              {section.message.query}
++            </h2>
++            {!(loading && isLast) && (
++              <button
++                onClick={() => {
++                  setDraft(section.message.query);
++                  setEditing(true);
++                }}
++                title="Edit message"
++                className="p-2 mt-1 rounded-full text-black/40 dark:text-white/40 hover:bg-light-secondary dark:hover:bg-dark-secondary hover:text-black dark:hover:text-white transition duration-200 opacity-40 lg:opacity-0 lg:group-hover:opacity-100"
++              >
++                <Pencil size={16} />
++              </button>
++            )}
++          </div>
++        )}
+       </div>
+ 
+       <div className="flex flex-col space-y-9 lg:space-y-0 lg:flex-row lg:justify-between lg:space-x-9">
+--- a/src/lib/agents/search/answerStream.ts
++++ b/src/lib/agents/search/answerStream.ts
+@@ -0,0 +1,90 @@
++import { GenerateTextInput, StreamTextOutput } from '@/lib/models/types';
++import SessionManager from '@/lib/session';
++import { Message, TextBlock } from '@/lib/types';
++
++type AnswerModel = {
++  streamText(input: GenerateTextInput): AsyncGenerator<StreamTextOutput>;
++};
++
++type AnswerModelWithProviderConfig = AnswerModel & {
++  config?: { model?: string };
++};
++
++const GENERATION_STALL_TIMEOUT_MS = 90000;
++
++export const streamAnswer = async (input: {
++  session: SessionManager;
++  llm: AnswerModel;
++  messages: Message[];
++}): Promise<void> => {
++  try {
++    const answerStream = input.llm.streamText({
++      messages: input.messages,
++    });
++
++    const iterator = answerStream[Symbol.asyncIterator]();
++
++    let block: TextBlock | null = null;
++
++    const nextWithTimeout = () => {
++      let timer: ReturnType<typeof setTimeout> | undefined;
++      return Promise.race([
++        iterator.next(),
++        new Promise<null>((resolve) => {
++          timer = setTimeout(() => resolve(null), GENERATION_STALL_TIMEOUT_MS);
++        }),
++      ]).then((result) => {
++        if (timer) clearTimeout(timer);
++        return result;
++      });
++    };
++
++    while (true) {
++      const next = await nextWithTimeout();
++
++      if (next === null) {
++        await iterator.return(undefined);
++        throw new Error(
++          `the model produced no output for ${
++            GENERATION_STALL_TIMEOUT_MS / 1000
++          }s`,
++        );
++      }
++
++      if (next.done) break;
++
++      const text = next.value.contentChunk;
++      if (!text) continue;
++
++      if (block) {
++        block.data += text;
++        input.session.updateBlock(block.id, [
++          {
++            op: 'replace',
++            path: '/data',
++            value: block.data,
++          },
++        ]);
++      } else {
++        block = {
++          id: crypto.randomUUID(),
++          type: 'text',
++          data: text,
++        };
++        input.session.emitBlock(block);
++      }
++    }
++  } catch (streamErr) {
++    console.error('Answer streaming failed:', streamErr);
++    // BaseLLM exposes its provider config as protected; read the model name for the error text.
++    const { config } = input.llm as AnswerModelWithProviderConfig;
++    const modelName = config?.model || 'selected model';
++    const errMsg =
++      streamErr instanceof Error ? streamErr.message : String(streamErr);
++    input.session.emitBlock({
++      id: crypto.randomUUID(),
++      type: 'text',
++      data: `I encountered an issue generating the answer with model "${modelName}" (${errMsg}). Please select another model or try again.`,
++    });
++  }
++};
+\ No newline at end of file
+--- a/src/lib/agents/search/classifier.ts
++++ b/src/lib/agents/search/classifier.ts
+@@ -34,7 +34,10 @@
+     ),
+ });
+ 
+-export const classify = async (input: ClassifierInput) => {
++export const classify = async (
++  input: ClassifierInput,
++  timeoutMs: number = 4000,
++) => {
+   try {
+     const output = await Promise.race([
+       input.llm.generateObject<typeof schema>({
+@@ -51,7 +54,11 @@
+         schema,
+       }),
+       new Promise<never>((_, reject) =>
+-        setTimeout(() => reject(new Error('Classification timed out after 4s')), 4000)
++        setTimeout(
++          () =>
++            reject(new Error(`Classification timed out after ${timeoutMs}ms`)),
++          timeoutMs,
++        ),
+       ),
+     ]);
+ 
+@@ -69,6 +76,7 @@
+         showCalculationWidget: false,
+       },
+       standaloneFollowUp: input.query,
++      degraded: true,
+     };
+   }
+ };
+--- a/src/lib/agents/search/index.ts
++++ b/src/lib/agents/search/index.ts
+@@ -7,7 +7,8 @@
+ import db from '@/lib/db';
+ import { messages } from '@/lib/db/schema';
+ import { and, eq, gt } from 'drizzle-orm';
+-import { TextBlock } from '@/lib/types';
++import { streamAnswer } from './answerStream';
++import { runSuperfast } from './superfast';
+ import { getTokenCount } from '@/lib/utils/splitText';
+ 
+ class SearchAgent {
+@@ -55,12 +56,15 @@
+     try {
+       let classification;
+       try {
+-        classification = await classify({
+-          chatHistory: input.chatHistory,
+-          enabledSources: input.config.sources,
+-          query: input.followUp,
+-          llm: input.config.llm,
+-        });
++        classification = await classify(
++          {
++            chatHistory: input.chatHistory,
++            enabledSources: input.config.sources,
++            query: input.followUp,
++            llm: input.config.llm,
++          },
++          input.config.mode === 'superfast' ? 2500 : 4000,
++        );
+       } catch (err) {
+         console.warn('Classification failed, using defaults:', err);
+         classification = {
+@@ -74,92 +78,103 @@
+             showCalculationWidget: false,
+           },
+           standaloneFollowUp: input.followUp,
++          degraded: true,
+         };
+       }
+ 
+-      const widgetPromise = WidgetExecutor.executeAll({
+-        classification,
+-        chatHistory: input.chatHistory,
+-        followUp: input.followUp,
+-        llm: input.config.llm,
+-      })
+-        .then((widgetOutputs) => {
+-          widgetOutputs.forEach((o) => {
+-            session.emitBlock({
+-              id: crypto.randomUUID(),
+-              type: 'widget',
+-              data: {
+-                widgetType: o.type,
+-                params: o.data,
+-              },
++      if (input.config.mode === 'superfast') {
++        await runSuperfast({
++          session,
++          agentInput: input,
++          classification,
++        });
++      } else {
++        const widgetPromise = WidgetExecutor.executeAll({
++          classification,
++          chatHistory: input.chatHistory,
++          followUp: input.followUp,
++          llm: input.config.llm,
++        })
++          .then((widgetOutputs) => {
++            widgetOutputs.forEach((o) => {
++              session.emitBlock({
++                id: crypto.randomUUID(),
++                type: 'widget',
++                data: {
++                  widgetType: o.type,
++                  params: o.data,
++                },
++              });
+             });
++            return widgetOutputs;
++          })
++          .catch((err) => {
++            console.error('Widget execution failed:', err);
++            return [];
+           });
+-          return widgetOutputs;
+-        })
+-        .catch((err) => {
+-          console.error('Widget execution failed:', err);
+-          return [];
+-        });
+ 
+-      let searchPromise: Promise<ResearcherOutput | null> = Promise.resolve(null);
++        let searchPromise: Promise<ResearcherOutput | null> =
++          Promise.resolve(null);
+ 
+-      if (!classification.classification.skipSearch) {
+-        const researcher = new Researcher();
+-        searchPromise = researcher
+-          .research(session, {
+-            chatHistory: input.chatHistory,
+-            followUp: input.followUp,
+-            classification: classification,
+-            config: input.config,
+-          })
+-          .catch((err) => {
+-            console.error('Researcher failed:', err);
+-            return null;
+-          });
+-      }
++        if (!classification.classification.skipSearch) {
++          const researcher = new Researcher();
++          searchPromise = researcher
++            .research(session, {
++              chatHistory: input.chatHistory,
++              followUp: input.followUp,
++              classification: classification,
++              config: input.config,
++            })
++            .catch((err) => {
++              console.error('Researcher failed:', err);
++              return null;
++            });
++        }
+ 
+-      const [widgetOutputs, searchResults] = await Promise.all([
+-        widgetPromise,
+-        searchPromise,
+-      ]);
++        const [widgetOutputs, searchResults] = await Promise.all([
++          widgetPromise,
++          searchPromise,
++        ]);
+ 
+-      session.emit('data', {
+-        type: 'researchComplete',
+-      });
++        session.emit('data', {
++          type: 'researchComplete',
++        });
+ 
+-      const didSkipSearch = classification.classification.skipSearch;
++        const didSkipSearch = classification.classification.skipSearch;
+ 
+-      let finalContext =
+-        '<Query to be answered without searching; Search not made>';
++        let finalContext =
++          '<Query to be answered without searching; Search not made>';
+ 
+-      if (searchResults) {
+-        finalContext = searchResults.searchFindings
+-          .map(
+-            (f, index) =>
+-              `<result index=${index + 1} title=${f.metadata.title}>${f.content}</result>`,
+-          )
+-          .join('\n');
+-      }
++        if (searchResults) {
++          finalContext = searchResults.searchFindings
++            .map(
++              (f, index) =>
++                `<result index=${index + 1} title=${f.metadata.title}>${f.content}</result>`,
++            )
++            .join('\n');
++        }
+ 
+-      const hasSearchResults = !!searchResults && searchResults.searchFindings.length > 0;
++        const hasSearchResults =
++          !!searchResults && searchResults.searchFindings.length > 0;
+ 
+-      const widgetContext = widgetOutputs
+-        .map((o) => {
+-          return `<result>${o.llmContext}</result>`;
+-        })
+-        .join('\n-------------\n');
++        const widgetContext = widgetOutputs
++          .map((o) => {
++            return `<result>${o.llmContext}</result>`;
++          })
++          .join('\n-------------\n');
+ 
+-      const finalContextWithWidgets = `<search_results note="These are the search results and assistant can cite these">\n${finalContext}\n</search_results>\n<widgets_result noteForAssistant="Its output is already showed to the user, assistant can use this information to answer the query but do not CITE this as a souce">\n${widgetContext}\n</widgets_result>`;
++        const finalContextWithWidgets = `<search_results note="These are the search results and assistant can cite these">\n${finalContext}\n</search_results>\n<widgets_result noteForAssistant="Its output is already showed to the user, assistant can use this information to answer the query but do not CITE this as a souce">\n${widgetContext}\n</widgets_result>`;
+ 
+-      const writerPrompt = getWriterPrompt(
+-        finalContextWithWidgets,
+-        input.config.systemInstructions,
+-        input.config.mode,
+-        hasSearchResults,
+-      );
++        const writerPrompt = getWriterPrompt(
++          finalContextWithWidgets,
++          input.config.systemInstructions,
++          input.config.mode,
++          hasSearchResults,
++        );
+ 
+-      try {
+-        const answerStream = input.config.llm.streamText({
++        await streamAnswer({
++          session,
++          llm: input.config.llm,
+           messages: [
+             {
+               role: 'system',
+@@ -171,47 +186,6 @@
+               content: input.followUp,
+             },
+           ],
+-        });
+-
+-        let responseBlockId = '';
+-
+-        for await (const chunk of answerStream) {
+-          if (!responseBlockId) {
+-            const block: TextBlock = {
+-              id: crypto.randomUUID(),
+-              type: 'text',
+-              data: chunk.contentChunk,
+-            };
+-
+-            session.emitBlock(block);
+-
+-            responseBlockId = block.id;
+-          } else {
+-            const block = session.getBlock(responseBlockId) as TextBlock | null;
+-
+-            if (!block) {
+-              continue;
+-            }
+-
+-            block.data += chunk.contentChunk;
+-
+-            session.updateBlock(block.id, [
+-              {
+-                op: 'replace',
+-                path: '/data',
+-                value: block.data,
+-              },
+-            ]);
+-          }
+-        }
+-      } catch (streamErr) {
+-        console.error('Answer streaming failed:', streamErr);
+-        const modelName = (input.config.llm as any)?.config?.model || 'selected model';
+-        const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+-        session.emitBlock({
+-          id: crypto.randomUUID(),
+-          type: 'text',
+-          data: `I encountered an issue generating the answer with model "${modelName}" (${errMsg}). Please select another model or try again.`,
+         });
+       }
+ 
+--- a/src/lib/agents/search/researcher/actions/plan.ts
++++ b/src/lib/agents/search/researcher/actions/plan.ts
+@@ -28,7 +28,7 @@
+   getToolDescription: () =>
+     'Use this FIRST on every turn to state your plan in natural language before any other action. Keep it short, action-focused, and tailored to the current query.',
+   getDescription: () => actionDescription,
+-  enabled: (config) => config.mode !== 'speed',
++  enabled: (config) => config.mode !== 'speed' && config.mode !== 'superfast',
+   execute: async (input, _) => {
+     return {
+       type: 'reasoning',
+--- a/src/lib/agents/search/researcher/actions/search/baseSearch.ts
++++ b/src/lib/agents/search/researcher/actions/search/baseSearch.ts
+@@ -34,7 +34,11 @@
+     },
+   ]);
+ 
+-  if (input.mode === 'speed' || input.mode === 'balanced') {
++  if (
++    input.mode === 'speed' ||
++    input.mode === 'balanced' ||
++    input.mode === 'superfast'
++  ) {
+     const searchResultsBlockId = crypto.randomUUID();
+     let searchResultsEmitted = false;
+ 
+--- a/src/lib/agents/search/researcher/actions/search/webSearch.ts
++++ b/src/lib/agents/search/researcher/actions/search/webSearch.ts
+@@ -68,6 +68,9 @@
+       case 'speed':
+         prompt = speedModePrompt;
+         break;
++      case 'superfast':
++        prompt = speedModePrompt;
++        break;
+       case 'balanced':
+         prompt = balancedModePrompt;
+         break;
+--- a/src/lib/agents/search/researcher/index.ts
++++ b/src/lib/agents/search/researcher/index.ts
+@@ -12,12 +12,13 @@
+     input: ResearcherInput,
+   ): Promise<ResearcherOutput> {
+     let actionOutput: ActionOutput[] = [];
+-    let maxIteration =
+-      input.config.mode === 'speed'
+-        ? 1
+-        : input.config.mode === 'balanced'
+-          ? 2
+-          : 3;
++    const maxIterationsByMode = {
++      superfast: 1,
++      speed: 1,
++      balanced: 2,
++      quality: 3,
++    } as const;
++    let maxIteration = maxIterationsByMode[input.config.mode];
+ 
+     const availableTools = ActionRegistry.getAvailableActionTools({
+       classification: input.classification,
+--- a/src/lib/agents/search/superfast.ts
++++ b/src/lib/agents/search/superfast.ts
+@@ -0,0 +1,130 @@
++import SessionManager from '@/lib/session';
++import { Chunk, ResearchBlock, SourceBlock } from '@/lib/types';
++import { getWriterPrompt } from '@/lib/prompts/search/writer';
++import { ClassifierOutput, SearchAgentInput } from './types';
++import { executeSearch } from './researcher/actions/search/baseSearch';
++import { streamAnswer } from './answerStream';
++
++const FRESH_INFO_PATTERN =
++  /\b(latest|newest|current|currently|today|tonight|tomorrow|yesterday|recent|recently|news|breaking|price|prices|cost|stock|shares?|weather|forecast|temperature|score|scores|standings|results?|who won|release date|released|schedule|opening hours|as of|right now|this (week|month|year)|20(2[6-9]|3\d))\b|https?:\/\//i;
++
++export const needsFreshInfo = (query: string) => FRESH_INFO_PATTERN.test(query);
++
++export const shouldSearch = (
++  classification: ClassifierOutput,
++  followUp: string,
++) =>
++  classification.degraded
++    ? needsFreshInfo(followUp)
++    : classification.classification.skipSearch === false;
++
++const dedupeFindings = (chunks: Chunk[]): Chunk[] => {
++  const seenUrls = new Map<string, number>();
++  const results: Chunk[] = [];
++
++  chunks.forEach((chunk) => {
++    const url = chunk.metadata?.url;
++    if (url && seenUrls.has(url)) {
++      const existing = results[seenUrls.get(url)!];
++      existing.content += `\n\n${chunk.content}`;
++      return;
++    }
++    if (url) seenUrls.set(url, results.length);
++    results.push(chunk);
++  });
++
++  return results;
++};
++
++export const runSuperfast = async (input: {
++  session: SessionManager;
++  agentInput: SearchAgentInput;
++  classification: ClassifierOutput;
++}): Promise<void> => {
++  const { session, agentInput, classification } = input;
++
++  let searchFindings: Chunk[] = [];
++
++  if (shouldSearch(classification, agentInput.followUp)) {
++    const query =
++      classification.standaloneFollowUp?.trim() || agentInput.followUp;
++
++    const researchBlock: ResearchBlock = {
++      id: crypto.randomUUID(),
++      type: 'research',
++      data: {
++        subSteps: [
++          {
++            id: crypto.randomUUID(),
++            type: 'reasoning',
++            reasoning: 'Searching the web...',
++          },
++        ],
++      },
++    };
++
++    session.emitBlock(researchBlock);
++
++    try {
++      const chunks = await executeSearch({
++        queries: [query],
++        mode: agentInput.config.mode,
++        researchBlock,
++        session,
++        llm: agentInput.config.llm,
++        embedding: agentInput.config.embedding,
++      });
++
++      searchFindings = dedupeFindings(chunks);
++
++      if (searchFindings.length > 0) {
++        const sourceBlock: SourceBlock = {
++          id: crypto.randomUUID(),
++          type: 'source',
++          data: searchFindings,
++        };
++        session.emitBlock(sourceBlock);
++      }
++    } catch (err) {
++      console.warn('Superfast search failed, answering without sources:', err);
++    }
++  }
++
++  session.emit('data', {
++    type: 'researchComplete',
++  });
++
++  const hasSearchResults = searchFindings.length > 0;
++
++  const context = hasSearchResults
++    ? searchFindings
++        .map(
++          (f, index) =>
++            `<result index=${index + 1} title=${f.metadata.title}>${f.content}</result>`,
++        )
++        .join('\n')
++    : '<Query to be answered without searching; Search not made>';
++
++  const writerPrompt = getWriterPrompt(
++    context,
++    agentInput.config.systemInstructions,
++    'superfast',
++    hasSearchResults,
++  );
++
++  await streamAnswer({
++    session,
++    llm: agentInput.config.llm,
++    messages: [
++      {
++        role: 'system',
++        content: writerPrompt,
++      },
++      ...agentInput.chatHistory,
++      {
++        role: 'user',
++        content: agentInput.followUp,
++      },
++    ],
++  });
++};
+\ No newline at end of file
+--- a/src/lib/agents/search/types.ts
++++ b/src/lib/agents/search/types.ts
+@@ -11,7 +11,7 @@
+   fileIds: string[];
+   llm: BaseLLM<any>;
+   embedding: BaseEmbedding<any>;
+-  mode: 'speed' | 'balanced' | 'quality';
++  mode: 'speed' | 'balanced' | 'quality' | 'superfast';
+   systemInstructions: string;
+ };
+ 
+@@ -60,6 +60,7 @@
+     showCalculationWidget: boolean;
+   };
+   standaloneFollowUp: string;
++  degraded?: boolean;
+ };
+ 
+ export type AdditionalConfig = {
+--- a/src/lib/hooks/useChat.tsx
++++ b/src/lib/hooks/useChat.tsx
+@@ -51,12 +51,9 @@
+   setSources: (sources: string[]) => void;
+   setFiles: (files: File[]) => void;
+   setFileIds: (fileIds: string[]) => void;
+-  sendMessage: (
+-    message: string,
+-    messageId?: string,
+-    rewrite?: boolean,
+-  ) => Promise<void>;
++  sendMessage: (message: string, messageId?: string) => Promise<void>;
+   rewrite: (messageId: string) => void;
++  editMessage: (messageId: string, content: string) => void;
+   setChatModelProvider: (provider: ChatModelProvider) => void;
+   setEmbeddingModelProvider: (provider: EmbeddingModelProvider) => void;
+   projectId: string | null;
+@@ -79,6 +76,10 @@
+   providerId: string;
+ }
+ 
++const STREAM_STALL_TIMEOUT_MS = 30000;
++const RECONNECT_DELAYS_MS = [1000, 2000, 3000];
++const CONTENT_STALL_TIMEOUT_MS = 120000;
++
+ const checkConfig = async (
+   setChatModelProvider: (provider: ChatModelProvider) => void,
+   setEmbeddingModelProvider: (provider: EmbeddingModelProvider) => void,
+@@ -264,6 +265,7 @@
+   embeddingModelProvider: { key: '', providerId: '' },
+   researchEnded: false,
+   rewrite: () => {},
++  editMessage: () => {},
+   sendMessage: async () => {},
+   setFileIds: () => {},
+   setFiles: () => {},
+@@ -326,7 +328,7 @@
+ 
+   useEffect(() => {
+     const saved = localStorage.getItem('optimizationMode');
+-    if (saved && ['speed', 'balanced', 'quality'].includes(saved)) {
++    if (saved && ['speed', 'balanced', 'quality', 'superfast'].includes(saved)) {
+       setOptimizationModeState(saved);
+     }
+   }, []);
+@@ -450,6 +452,7 @@
+ 
+   const isReconnectingRef = useRef(false);
+   const handledMessageEndRef = useRef<Set<string>>(new Set());
++  const serverSessionIdsRef = useRef<Record<string, string>>({});
+ 
+   const checkReconnect = async () => {
+     if (isReconnectingRef.current) return;
+@@ -466,39 +469,9 @@
+         setMessageAppeared(false);
+ 
+         isReconnectingRef.current = true;
+-
+-        const res = await fetch(`/api/reconnect/${lastMsg.backendId}`, {
+-          method: 'POST',
+-        });
+-
+-        if (!res.body) throw new Error('No response body');
+-
+-        const reader = res.body?.getReader();
+-        const decoder = new TextDecoder('utf-8');
+-
+-        let partialChunk = '';
+-
+-        const messageHandler = getMessageHandler(lastMsg);
+ 
+         try {
+-          while (true) {
+-            const { value, done } = await reader.read();
+-            if (done) break;
+-
+-            partialChunk += decoder.decode(value, { stream: true });
+-
+-            try {
+-              const messages = partialChunk.split('\n');
+-              for (const msg of messages) {
+-                if (!msg.trim()) continue;
+-                const json = JSON.parse(msg);
+-                messageHandler(json);
+-              }
+-              partialChunk = '';
+-            } catch (error) {
+-              console.warn('Incomplete JSON, waiting for next chunk...');
+-            }
+-          }
++          await recoverStream(lastMsg);
+         } finally {
+           isReconnectingRef.current = false;
+         }
+@@ -589,7 +562,20 @@
+     }
+   }, [isMessagesLoaded, isConfigReady, newChatCreated]);
+ 
+-  const rewrite = (messageId: string) => {
++  const trimMessagesFrom = async (messageId: string) => {
++    if (!chatId) return;
++
++    try {
++      await fetch(
++        `/api/chats/${chatId}/messages?afterMessageId=${encodeURIComponent(messageId)}`,
++        { method: 'DELETE' },
++      );
++    } catch (error) {
++      console.warn('Failed to trim later messages:', error);
++    }
++  };
++
++  const rewrite = async (messageId: string) => {
+     const index = messages.findIndex((msg) => msg.messageId === messageId);
+ 
+     if (index === -1) return;
+@@ -599,10 +585,53 @@
+     chatHistory.current = chatHistory.current.slice(0, index * 2);
+ 
+     const messageToRewrite = messages[index];
+-    sendMessage(messageToRewrite.query, messageToRewrite.messageId, true);
++    await trimMessagesFrom(messageId);
++    sendMessage(messageToRewrite.query, messageToRewrite.messageId);
++  };
++
++  const editMessage = (messageId: string, content: string) => {
++    if (loading) return;
++
++    const trimmed = content.trim();
++    if (!trimmed) return;
++
++    const index = messages.findIndex((msg) => msg.messageId === messageId);
++    if (index === -1 || messages[index].query === trimmed) return;
++
++    setMessages((prev) => prev.slice(0, index));
++    chatHistory.current = chatHistory.current.slice(0, index * 2);
++
++    trimMessagesFrom(messageId).then(() => sendMessage(trimmed, messageId));
+   };
+ 
+   useEffect(() => {
++    let knownBuildId: string | null = null;
++
++    const checkBuildId = async () => {
++      try {
++        const res = await fetch('/api/version');
++
++        if (!res.ok) return;
++
++        const { buildId } = await res.json();
++
++        if (typeof buildId !== 'string' || !buildId) return;
++
++        if (knownBuildId === null) {
++          knownBuildId = buildId;
++        } else if (buildId !== knownBuildId) {
++          toast.info('Vane was updated — reloading…');
++          setTimeout(() => window.location.reload(), 1200);
++        }
++      } catch {}
++    };
++
++    checkBuildId();
++    const interval = setInterval(checkBuildId, 60000);
++    return () => clearInterval(interval);
++  }, []);
++
++  useEffect(() => {
+     if (isReady && initialMessage && isConfigReady) {
+       if (!isConfigReady) {
+         toast.error('Cannot send message before the configuration is ready');
+@@ -617,6 +646,11 @@
+     const messageId = message.messageId;
+ 
+     return async (data: any) => {
++      if (data.type === 'sessionId') {
++        serverSessionIdsRef.current[messageId] = String(data.data);
++        return;
++      }
++
+       if (data.type === 'error') {
+         toast.error(data.data);
+         setLoading(false);
+@@ -777,10 +811,116 @@
+     };
+   };
+ 
++  const consumeStream = async (res: Response, message: Message) => {
++    if (!res.ok) {
++      let detail = `Request failed with status ${res.status}`;
++      try {
++        const body = await res.json();
++        if (body?.message) detail = String(body.message);
++        if (Array.isArray(body?.error) && body.error[0]?.message) {
++          detail += `: ${body.error[0].path} ${body.error[0].message}`;
++        }
++      } catch {}
++      throw new Error(detail);
++    }
++    if (!res.body) throw new Error('No response body');
++
++    const reader = res.body.getReader();
++    const decoder = new TextDecoder('utf-8');
++    const messageHandler = getMessageHandler(message);
++    let partialChunk = '';
++    let lastDataAt = Date.now();
++    let lastContentAt = Date.now();
++    let stalled = false;
++    let contentStalled = false;
++
++    const watchdog = setInterval(() => {
++      const now = Date.now();
++
++      if (now - lastDataAt > STREAM_STALL_TIMEOUT_MS) {
++        stalled = true;
++        reader.cancel().catch(() => {});
++      } else if (now - lastContentAt > CONTENT_STALL_TIMEOUT_MS) {
++        contentStalled = true;
++        reader.cancel().catch(() => {});
++      }
++    }, 5000);
++
++    try {
++      while (true) {
++        const { value, done } = await reader.read();
++        if (done) break;
++
++        lastDataAt = Date.now();
++        partialChunk += decoder.decode(value, { stream: true });
++
++        try {
++          const lines = partialChunk.split('\n');
++          for (const line of lines) {
++            if (!line.trim()) continue;
++            const parsed = JSON.parse(line);
++
++            if (
++              parsed?.type === 'block' ||
++              parsed?.type === 'updateBlock' ||
++              parsed?.type === 'researchComplete' ||
++              parsed?.type === 'messageEnd' ||
++              parsed?.type === 'error'
++            ) {
++              lastContentAt = Date.now();
++            }
++
++            messageHandler(parsed);
++          }
++          partialChunk = '';
++        } catch (error) {
++          console.warn('Incomplete JSON, waiting for next chunk...');
++        }
++      }
++    } finally {
++      clearInterval(watchdog);
++    }
++
++    if (stalled) throw new Error('Stream stalled');
++    if (contentStalled) throw new Error('No answer progress');
++  };
++
++  const recoverStream = async (message: Message) => {
++    setLoading(true);
++
++    const backendId =
++      serverSessionIdsRef.current[message.messageId] || message.backendId;
++
++    for (const delay of RECONNECT_DELAYS_MS) {
++      const sleep = Promise.withResolvers<void>();
++      setTimeout(sleep.resolve, delay);
++      await sleep.promise;
++
++      try {
++        const res = await fetch(`/api/reconnect/${backendId}`, {
++          method: 'POST',
++        });
++        await consumeStream(res, message);
++        return;
++      } catch (error) {
++        console.warn('Reconnect attempt failed:', error);
++      }
++    }
++
++    setMessages((prev) =>
++      prev.map((msg) =>
++        msg.messageId === message.messageId
++          ? { ...msg, status: 'error' as const }
++          : msg,
++      ),
++    );
++    setLoading(false);
++    toast.error('Lost connection to the server. Please try again.');
++  };
++
+   const sendMessage: ChatContext['sendMessage'] = async (
+     message,
+     messageId,
+-    rewrite = false,
+   ) => {
+     if (loading || !message) return;
+     setLoading(true);
+@@ -792,6 +932,9 @@
+     }
+ 
+     messageId = messageId ?? crypto.randomBytes(7).toString('hex');
++    // Edit/rewrite re-send an existing messageId; allow its new messageEnd to
++    // be processed instead of being swallowed by the once-only dedupe.
++    handledMessageEndRef.current.delete(messageId);
+     const backendId = crypto.randomBytes(20).toString('hex');
+ 
+     const newMessage: Message = {
+@@ -806,69 +949,41 @@
+ 
+     setMessages((prevMessages) => [...prevMessages, newMessage]);
+ 
+-    const messageIndex = messages.findIndex((m) => m.messageId === messageId);
+-
+-    const res = await fetch('/api/chat', {
+-      method: 'POST',
+-      headers: {
+-        'Content-Type': 'application/json',
+-      },
+-      body: JSON.stringify({
+-        content: message,
+-        message: {
+-          messageId: messageId,
+-          chatId: chatId!,
+-          content: message,
+-        },
+-        chatId: chatId!,
+-        files: fileIds,
+-        sources: sources,
+-        optimizationMode: optimizationMode,
+-        history: rewrite
+-          ? chatHistory.current.slice(
+-              0,
+-              messageIndex === -1 ? undefined : messageIndex,
+-            )
+-          : chatHistory.current,
+-        chatModel: {
+-          key: chatModelProvider.key,
+-          providerId: chatModelProvider.providerId,
++    try {
++      const res = await fetch('/api/chat', {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
+         },
+-        embeddingModel: {
+-          key: embeddingModelProvider.key,
+-          providerId: embeddingModelProvider.providerId,
+-        },
+-        systemInstructions: localStorage.getItem('systemInstructions'),
+-        projectId: projectId || undefined,
+-      }),
+-    });
+-
+-    if (!res.body) throw new Error('No response body');
+-
+-    const reader = res.body?.getReader();
+-    const decoder = new TextDecoder('utf-8');
+-
+-    let partialChunk = '';
+-
+-    const messageHandler = getMessageHandler(newMessage);
+-
+-    while (true) {
+-      const { value, done } = await reader.read();
+-      if (done) break;
+-
+-      partialChunk += decoder.decode(value, { stream: true });
++        body: JSON.stringify({
++          content: message,
++          message: {
++            messageId: messageId,
++            chatId: chatId!,
++            content: message,
++          },
++          chatId: chatId!,
++          files: fileIds,
++          sources: sources,
++          optimizationMode: optimizationMode,
++          history: chatHistory.current,
++          chatModel: {
++            key: chatModelProvider.key,
++            providerId: chatModelProvider.providerId,
++          },
++          embeddingModel: {
++            key: embeddingModelProvider.key,
++            providerId: embeddingModelProvider.providerId,
++          },
++          systemInstructions: localStorage.getItem('systemInstructions'),
++          projectId: projectId || undefined,
++        }),
++      });
+ 
+-      try {
+-        const messages = partialChunk.split('\n');
+-        for (const msg of messages) {
+-          if (!msg.trim()) continue;
+-          const json = JSON.parse(msg);
+-          messageHandler(json);
+-        }
+-        partialChunk = '';
+-      } catch (error) {
+-        console.warn('Incomplete JSON, waiting for next chunk...');
+-      }
++      await consumeStream(res, newMessage);
++    } catch (error) {
++      console.warn('Chat stream interrupted, reconnecting:', error);
++      await recoverStream(newMessage);
+     }
+   };
+ 
+@@ -894,6 +1009,7 @@
+         setSources,
+         setOptimizationMode,
+         rewrite,
++        editMessage,
+         sendMessage,
+         setChatModelProvider,
+         chatModelProvider,
+--- a/src/lib/prompts/search/researcher.ts
++++ b/src/lib/prompts/search/researcher.ts
+@@ -319,7 +319,7 @@
+ 
+ export const getResearcherPrompt = (
+   actionDesc: string,
+-  mode: 'speed' | 'balanced' | 'quality',
++  mode: 'speed' | 'balanced' | 'quality' | 'superfast',
+   i: number,
+   maxIteration: number,
+   fileIds: string[],
+@@ -339,6 +339,9 @@
+     case 'speed':
+       prompt = getSpeedPrompt(actionDesc, i, maxIteration, fileDesc);
+       break;
++    case 'superfast':
++      prompt = getSpeedPrompt(actionDesc, i, maxIteration, fileDesc);
++      break;
+     case 'balanced':
+       prompt = getBalancedPrompt(actionDesc, i, maxIteration, fileDesc);
+       break;
+--- a/src/lib/prompts/search/writer.ts
++++ b/src/lib/prompts/search/writer.ts
+@@ -1,7 +1,7 @@
+ export const getWriterPrompt = (
+   context: string,
+   systemInstructions: string,
+-  mode: 'speed' | 'balanced' | 'quality',
++  mode: 'speed' | 'balanced' | 'quality' | 'superfast',
+   hasSearchResults: boolean = true,
+ ) => {
+   const citationBlock = hasSearchResults
+@@ -48,6 +48,7 @@
+     - If the user provides vague input or if relevant information is missing, explain what additional details might help refine the search.
+     ${noResultsFallback}
+     ${mode === 'quality' ? "- YOU ARE CURRENTLY SET IN QUALITY MODE, GENERATE VERY DEEP, DETAILED AND COMPREHENSIVE RESPONSES USING THE FULL CONTEXT PROVIDED. ASSISTANT'S RESPONSES SHALL NOT BE LESS THAN AT LEAST 2000 WORDS, COVER EVERYTHING AND FRAME IT LIKE A RESEARCH REPORT." : ''}
++    ${mode === 'superfast' ? '- YOU ARE CURRENTLY SET IN SUPERFAST MODE: ANSWER DIRECTLY AND CONCISELY. SKIP PREAMBLES AND PADDING, KEEP THE STRUCTURE LIGHT, AND CITE SOURCES WHEN THEY ARE PROVIDED.' : ''}
+     
+     ### User instructions
+     These instructions are shared to you by the user and not by the system. You will have to follow them but give them less priority than the above instructions. If the user has provided specific instructions or preferences, incorporate them into your response while adhering to the overall guidelines.
+--- a/src/lib/session.ts
++++ b/src/lib/session.ts
+@@ -15,11 +15,23 @@
+   private events: { event: string; data: any }[] = [];
+   private emitter = new EventEmitter();
+   private TTL_MS = 30 * 60 * 1000;
++  private static readonly UPDATE_THROTTLE_MS = 100;
++  private pendingUpdates = new Map<
++    string,
++    {
++      data: { type: string; blockId: string; patch: unknown[] };
++      timer: NodeJS.Timeout;
++    }
++  >();
+ 
+   constructor(id?: string) {
+     this.id = id ?? crypto.randomUUID();
+ 
+     setTimeout(() => {
++      for (const [, entry] of this.pendingUpdates) {
++        clearTimeout(entry.timer);
++      }
++      this.pendingUpdates.clear();
+       SessionManager.sessions.delete(this.id);
+     }, this.TTL_MS);
+   }
+@@ -42,11 +54,26 @@
+     this.emitter.removeAllListeners();
+   }
+ 
+-  emit(event: string, data: any) {
++  private dispatch(event: string, data: unknown) {
+     this.emitter.emit(event, data);
+     this.events.push({ event, data });
+   }
+ 
++  private flushPendingUpdates() {
++    for (const [, entry] of this.pendingUpdates) {
++      clearTimeout(entry.timer);
++      this.dispatch('data', entry.data);
++    }
++    this.pendingUpdates.clear();
++  }
++
++  emit(event: string, data: unknown) {
++    if (event === 'end' || event === 'error') {
++      this.flushPendingUpdates();
++    }
++    this.dispatch(event, data);
++  }
++
+   emitBlock(block: Block) {
+     this.blocks.set(block.id, block);
+     this.emit('data', {
+@@ -62,15 +89,33 @@
+   updateBlock(blockId: string, patch: any[]) {
+     const block = this.blocks.get(blockId);
+ 
+-    if (block) {
+-      applyPatch(block, patch);
+-      this.blocks.set(blockId, block);
+-      this.emit('data', {
+-        type: 'updateBlock',
+-        blockId: blockId,
+-        patch: patch,
+-      });
++    if (!block) return;
++
++    applyPatch(block, patch);
++    this.blocks.set(blockId, block);
++
++    const data: { type: string; blockId: string; patch: unknown[] } = {
++      type: 'updateBlock',
++      blockId: blockId,
++      patch: patch,
++    };
++
++    const pending = this.pendingUpdates.get(blockId);
++
++    if (pending) {
++      pending.data = data;
++      return;
+     }
++
++    this.pendingUpdates.set(blockId, {
++      data,
++      timer: setTimeout(() => {
++        const entry = this.pendingUpdates.get(blockId);
++        if (!entry) return;
++        this.pendingUpdates.delete(blockId);
++        this.dispatch('data', entry.data);
++      }, SessionManager.UPDATE_THROTTLE_MS),
++    });
+   }
+ 
+   getAllBlocks() {

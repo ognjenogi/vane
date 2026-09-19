@@ -28,7 +28,7 @@ const planAction: ResearchAction<typeof schema> = {
   getToolDescription: () =>
     'Use this FIRST on every turn to state your plan in natural language before any other action. Keep it short, action-focused, and tailored to the current query.',
   getDescription: () => actionDescription,
-  enabled: (config) => config.mode !== 'speed',
+  enabled: (config) => config.mode !== 'speed' && config.mode !== 'superfast',
   execute: async (input, _) => {
     return {
       type: 'reasoning',

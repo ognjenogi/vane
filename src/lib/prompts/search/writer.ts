@@ -1,7 +1,7 @@
 export const getWriterPrompt = (
   context: string,
   systemInstructions: string,
-  mode: 'speed' | 'balanced' | 'quality',
+  mode: 'speed' | 'balanced' | 'quality' | 'superfast',
   hasSearchResults: boolean = true,
 ) => {
   const citationBlock = hasSearchResults
@@ -48,6 +48,7 @@ You are Vane, an AI model skilled in web search and crafting detailed, engaging,
     - If the user provides vague input or if relevant information is missing, explain what additional details might help refine the search.
     ${noResultsFallback}
     ${mode === 'quality' ? "- YOU ARE CURRENTLY SET IN QUALITY MODE, GENERATE VERY DEEP, DETAILED AND COMPREHENSIVE RESPONSES USING THE FULL CONTEXT PROVIDED. ASSISTANT'S RESPONSES SHALL NOT BE LESS THAN AT LEAST 2000 WORDS, COVER EVERYTHING AND FRAME IT LIKE A RESEARCH REPORT." : ''}
+    ${mode === 'superfast' ? '- YOU ARE CURRENTLY SET IN SUPERFAST MODE: ANSWER DIRECTLY AND CONCISELY. SKIP PREAMBLES AND PADDING, KEEP THE STRUCTURE LIGHT, AND CITE SOURCES WHEN THEY ARE PROVIDED.' : ''}
     
     ### User instructions
     These instructions are shared to you by the user and not by the system. You will have to follow them but give them less priority than the above instructions. If the user has provided specific instructions or preferences, incorporate them into your response while adhering to the overall guidelines.

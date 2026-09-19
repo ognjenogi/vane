@@ -7,7 +7,7 @@ import MessageBoxLoading from './MessageBoxLoading';
 import { useChat } from '@/lib/hooks/useChat';
 
 const Chat = () => {
-  const { sections, loading, messageAppeared, messages } = useChat();
+  const { sections, loading, messages } = useChat();
 
   const [dividerWidth, setDividerWidth] = useState(0);
   const dividerRef = useRef<HTMLDivElement | null>(null);
@@ -58,6 +58,11 @@ const Chat = () => {
     }
   }, [messages]);
 
+  const lastSection = sections[sections.length - 1];
+  const lastHasText = Boolean(
+    lastSection?.parsedTextBlocks.some((block) => block.trim().length > 0),
+  );
+
   return (
     <div className="flex flex-col space-y-6 pt-8 pb-44 lg:pb-28 sm:mx-4 md:mx-8">
       {sections.map((section, i) => {
@@ -77,7 +82,7 @@ const Chat = () => {
           </Fragment>
         );
       })}
-      {loading && !messageAppeared && <MessageBoxLoading />}
+      {loading && !lastHasText && <MessageBoxLoading />}
       <div ref={messageEnd} className="h-0" />
       {dividerWidth > 0 && (
         <div

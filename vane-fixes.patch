@@ -1,0 +1,408 @@
+diff --git a/src/lib/agents/search/api.ts b/src/lib/agents/search/api.ts
+index 94b70ae..b571da6 100644
+--- a/src/lib/agents/search/api.ts
++++ b/src/lib/agents/search/api.ts
+@@ -7,12 +7,30 @@ import { WidgetExecutor } from './widgets';
+ 
+ class APISearchAgent {
+   async searchAsync(session: SessionManager, input: SearchAgentInput) {
+-    const classification = await classify({
+-      chatHistory: input.chatHistory,
+-      enabledSources: input.config.sources,
+-      query: input.followUp,
+-      llm: input.config.llm,
+-    });
++    // Classify with error handling
++    let classification;
++    try {
++      classification = await classify({
++        chatHistory: input.chatHistory,
++        enabledSources: input.config.sources,
++        query: input.followUp,
++        llm: input.config.llm,
++      });
++    } catch (err) {
++      console.error('Classification failed, using defaults:', err);
++      classification = {
++        classification: {
++          skipSearch: false,
++          personalSearch: false,
++          academicSearch: false,
++          discussionSearch: false,
++          showWeatherWidget: false,
++          showStockWidget: false,
++          showCalculationWidget: false,
++        },
++        standaloneFollowUp: input.followUp,
++      };
++    }
+ 
+     const widgetPromise = WidgetExecutor.executeAll({
+       classification,
+@@ -24,7 +42,7 @@ class APISearchAgent {
+       return [];
+     });
+ 
+-    let searchPromise: Promise<ResearcherOutput> | null = null;
++    let searchPromise: Promise<ResearcherOutput | null> = Promise.resolve(null);
+ 
+     if (!classification.classification.skipSearch) {
+       const researcher = new Researcher();
+@@ -33,6 +51,9 @@ class APISearchAgent {
+         followUp: input.followUp,
+         classification: classification,
+         config: input.config,
++      }).catch((err) => {
++        console.error('Research failed:', err);
++        return null;
+       });
+     }
+ 
+@@ -74,24 +95,32 @@ class APISearchAgent {
+       input.config.mode,
+     );
+ 
+-    const answerStream = input.config.llm.streamText({
+-      messages: [
+-        {
+-          role: 'system',
+-          content: writerPrompt,
+-        },
+-        ...input.chatHistory,
+-        {
+-          role: 'user',
+-          content: input.followUp,
+-        },
+-      ],
+-    });
++    try {
++      const answerStream = input.config.llm.streamText({
++        messages: [
++          {
++            role: 'system',
++            content: writerPrompt,
++          },
++          ...input.chatHistory,
++          {
++            role: 'user',
++            content: input.followUp,
++          },
++        ],
++      });
+ 
+-    for await (const chunk of answerStream) {
++      for await (const chunk of answerStream) {
++        session.emit('data', {
++          type: 'response',
++          data: chunk.contentChunk,
++        });
++      }
++    } catch (err) {
++      console.error('Answer generation failed:', err);
+       session.emit('data', {
+         type: 'response',
+-        data: chunk.contentChunk,
++        data: 'I encountered an error generating the answer. Please try again.',
+       });
+     }
+ 
+diff --git a/src/lib/agents/search/classifier.ts b/src/lib/agents/search/classifier.ts
+index 5909e35..37f990d 100644
+--- a/src/lib/agents/search/classifier.ts
++++ b/src/lib/agents/search/classifier.ts
+@@ -35,19 +35,40 @@ const schema = z.object({
+ });
+ 
+ export const classify = async (input: ClassifierInput) => {
+-  const output = await input.llm.generateObject<typeof schema>({
+-    messages: [
+-      {
+-        role: 'system',
+-        content: classifierPrompt,
+-      },
+-      {
+-        role: 'user',
+-        content: `<conversation_history>\n${formatChatHistoryAsString(input.chatHistory)}\n</conversation_history>\n<user_query>\n${input.query}\n</user_query>`,
+-      },
+-    ],
+-    schema,
+-  });
++  try {
++    const output = await Promise.race([
++      input.llm.generateObject<typeof schema>({
++        messages: [
++          {
++            role: 'system',
++            content: classifierPrompt,
++          },
++          {
++            role: 'user',
++            content: `<conversation_history>\n${formatChatHistoryAsString(input.chatHistory)}\n</conversation_history>\n<user_query>\n${input.query}\n</user_query>`,
++          },
++        ],
++        schema,
++      }),
++      new Promise<never>((_, reject) =>
++        setTimeout(() => reject(new Error('Classification timed out after 30s')), 30000)
++      ),
++    ]);
+ 
+-  return output;
++    return output;
++  } catch (err) {
++    console.warn('Classification failed, using defaults:', err instanceof Error ? err.message : err);
++    return {
++      classification: {
++        skipSearch: false,
++        personalSearch: false,
++        academicSearch: false,
++        discussionSearch: false,
++        showWeatherWidget: false,
++        showStockWidget: false,
++        showCalculationWidget: false,
++      },
++      standaloneFollowUp: input.query,
++    };
++  }
+ };
+diff --git a/src/lib/agents/search/researcher/actions/search/baseSearch.ts b/src/lib/agents/search/researcher/actions/search/baseSearch.ts
+index de99123..cfb2f37 100644
+--- a/src/lib/agents/search/researcher/actions/search/baseSearch.ts
++++ b/src/lib/agents/search/researcher/actions/search/baseSearch.ts
+@@ -50,26 +50,32 @@ export const executeSearch = async (input: {
+       try {
+         const queryEmbedding = (await input.embedding.embedText([q]))[0];
+ 
+-        resultChunks = (
+-          await Promise.all(
+-            res.results.map(async (r) => {
+-              const content = r.content || r.title;
+-              const chunkEmbedding = (
+-                await input.embedding.embedText([content])
+-              )[0];
+-
+-              return {
+-                content,
+-                metadata: {
+-                  title: r.title,
+-                  url: r.url,
+-                  similarity: computeSimilarity(queryEmbedding, chunkEmbedding),
+-                  embedding: chunkEmbedding,
+-                },
+-              };
+-            }),
+-          )
+-        ).filter((c) => c.metadata.similarity > 0.5);
++        const allChunks = await Promise.all(
++          res.results.map(async (r) => {
++            const content = r.content || r.title;
++            const chunkEmbedding = (
++              await input.embedding.embedText([content])
++            )[0];
++
++            return {
++              content,
++              metadata: {
++                title: r.title,
++                url: r.url,
++                similarity: computeSimilarity(queryEmbedding, chunkEmbedding),
++                embedding: chunkEmbedding,
++              },
++            };
++          }),
++        );
++
++        // Lower threshold from 0.5 to 0.3, with fallback to top 5 by score
++        resultChunks = allChunks.filter((c) => c.metadata.similarity > 0.3);
++        if (resultChunks.length === 0 && allChunks.length > 0) {
++          resultChunks = allChunks
++            .sort((a, b) => b.metadata.similarity - a.metadata.similarity)
++            .slice(0, 5);
++        }
+       } catch (err) {
+         resultChunks = res.results.map((r) => {
+           const content = r.content || r.title;
+diff --git a/src/lib/agents/search/researcher/index.ts b/src/lib/agents/search/researcher/index.ts
+index 0a25d91..ec6b101 100644
+--- a/src/lib/agents/search/researcher/index.ts
++++ b/src/lib/agents/search/researcher/index.ts
+@@ -56,7 +56,15 @@ class Researcher {
+       },
+     ];
+ 
++    const researchStartTime = Date.now();
++    const MAX_RESEARCH_TIME_MS = 60000; // 60 second max for entire research
++
+     for (let i = 0; i < maxIteration; i++) {
++      // Timeout guard
++      if (Date.now() - researchStartTime > MAX_RESEARCH_TIME_MS) {
++        console.warn('Research loop timed out after 60s');
++        break;
++      }
+       const researcherPrompt = getResearcherPrompt(
+         availableActionsDescription,
+         input.config.mode,
+diff --git a/src/lib/db/index.ts b/src/lib/db/index.ts
+index 515cdb3..3be9042 100644
+--- a/src/lib/db/index.ts
++++ b/src/lib/db/index.ts
+@@ -5,6 +5,14 @@ import path from 'path';
+ 
+ const DATA_DIR = process.env.DATA_DIR || process.cwd();
+ const sqlite = new Database(path.join(DATA_DIR, './data/db.sqlite'));
++
++// Performance optimizations
++sqlite.pragma('journal_mode = WAL');
++sqlite.pragma('synchronous = NORMAL');
++sqlite.pragma('cache_size = -64000'); // 64MB cache
++sqlite.pragma('busy_timeout = 5000');
++sqlite.pragma('temp_store = MEMORY');
++
+ const db = drizzle(sqlite, {
+   schema: schema,
+ });
+diff --git a/src/lib/models/providers/openai/openaiLLM.ts b/src/lib/models/providers/openai/openaiLLM.ts
+index 5ae1538..f68b6c3 100644
+--- a/src/lib/models/providers/openai/openaiLLM.ts
++++ b/src/lib/models/providers/openai/openaiLLM.ts
+@@ -214,13 +214,25 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+ 
+     if (response.choices && response.choices.length > 0) {
+       try {
+-        return input.schema.parse(
+-          JSON.parse(
+-            repairJson(response.choices[0].message.content!, {
+-              extractJson: true,
+-            }) as string,
+-          ),
+-        ) as T;
++        const rawContent = response.choices[0].message.content;
++        if (!rawContent) {
++          throw new Error('Empty response content from OpenAI');
++        }
++        
++        const repairedJson = repairJson(rawContent, {
++          extractJson: true,
++        }) as string;
++        
++        const parsed = JSON.parse(repairedJson);
++        const validated = input.schema.safeParse(parsed);
++        
++        if (!validated.success) {
++          console.warn('Schema validation failed, attempting direct return:', validated.error.message);
++          // Return the parsed JSON as-is if it has the right shape
++          return parsed as T;
++        }
++        
++        return validated.data as T;
+       } catch (err) {
+         throw new Error(`Error parsing response from OpenAI: ${err}`);
+       }
+diff --git a/src/lib/scraper.ts b/src/lib/scraper.ts
+index 767367d..a1b86e6 100644
+--- a/src/lib/scraper.ts
++++ b/src/lib/scraper.ts
+@@ -49,6 +49,43 @@ class Scraper {
+   static async scrape(
+     url: string,
+   ): Promise<{ content: string; title: string }> {
++    // Fast path: HTTP fetch with JSDOM + Readability (sub-second, low memory)
++    try {
++      const controller = new AbortController();
++      const timeout = setTimeout(() => controller.abort(), 8000);
++      const res = await fetch(url, {
++        signal: controller.signal,
++        headers: {
++          'User-Agent':
++            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
++          Accept:
++            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
++          'Accept-Language': 'en-US,en;q=0.9',
++        },
++      });
++      clearTimeout(timeout);
++
++      if (res.ok) {
++        const html = await res.text();
++        const dom = new JSDOM(html, { url });
++        const article = new Readability(dom.window.document).parse();
++        const title = dom.window.document.title || article?.title || 'No title';
++        const textContent = article?.textContent?.trim();
++
++        if (textContent && textContent.length > 200) {
++          return {
++            content: `
++        # ${title} - ${url}
++        ${textContent}
++        `,
++            title,
++          };
++        }
++      }
++    } catch {
++      // Fast path failed or timed out; proceed to browser fallback
++    }
++
+     await this.initBrowser();
+ 
+     if (!this.browser) throw new Error('Browser not initialized');
+diff --git a/src/lib/searxng.ts b/src/lib/searxng.ts
+index 417df22..115b4a5 100644
+--- a/src/lib/searxng.ts
++++ b/src/lib/searxng.ts
+@@ -18,10 +18,41 @@ interface SearxngSearchResult {
+   iframe_src?: string;
+ }
+ 
++// Simple in-memory cache with TTL
++const searchCache = new Map<string, { data: any; timestamp: number }>();
++const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
++const MAX_CACHE_SIZE = 200;
++
++function getCacheKey(query: string, opts?: SearxngSearchOptions): string {
++  return `${query}::${JSON.stringify(opts || {})}`;
++}
++
++function getCached(key: string): any | null {
++  const entry = searchCache.get(key);
++  if (!entry || Date.now() - entry.timestamp > CACHE_TTL) {
++    searchCache.delete(key);
++    return null;
++  }
++  return entry.data;
++}
++
++function setCache(key: string, data: any): void {
++  if (searchCache.size >= MAX_CACHE_SIZE) {
++    const oldestKey = searchCache.keys().next().value;
++    if (oldestKey) searchCache.delete(oldestKey);
++  }
++  searchCache.set(key, { data, timestamp: Date.now() });
++}
++
+ export const searchSearxng = async (
+   query: string,
+   opts?: SearxngSearchOptions,
+ ) => {
++  // Check cache first
++  const cacheKey = getCacheKey(query, opts);
++  const cached = getCached(cacheKey);
++  if (cached) return cached;
++
+   const searxngURL = getSearxngURL();
+ 
+   const url = new URL(`${searxngURL}/search?format=json`);
+@@ -55,7 +86,12 @@ export const searchSearxng = async (
+     const results: SearxngSearchResult[] = data.results;
+     const suggestions: string[] = data.suggestions;
+ 
+-    return { results, suggestions };
++    const result = { results, suggestions };
++    
++    // Cache successful results
++    setCache(cacheKey, result);
++    
++    return result;
+   } catch (err: any) {
+     if (err.name === 'AbortError') {
+       throw new Error('SearXNG search timed out');

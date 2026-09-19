@@ -11,7 +11,7 @@ export type SearchAgentConfig = {
   fileIds: string[];
   llm: BaseLLM<any>;
   embedding: BaseEmbedding<any>;
-  mode: 'speed' | 'balanced' | 'quality';
+  mode: 'speed' | 'balanced' | 'quality' | 'superfast';
   systemInstructions: string;
 };
 
@@ -60,6 +60,7 @@ export type ClassifierOutput = {
     showCalculationWidget: boolean;
   };
   standaloneFollowUp: string;
+  degraded?: boolean;
 };
 
 export type AdditionalConfig = {

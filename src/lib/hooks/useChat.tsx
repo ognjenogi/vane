@@ -51,12 +51,9 @@ type ChatContext = {
   setSources: (sources: string[]) => void;
   setFiles: (files: File[]) => void;
   setFileIds: (fileIds: string[]) => void;
-  sendMessage: (
-    message: string,
-    messageId?: string,
-    rewrite?: boolean,
-  ) => Promise<void>;
+  sendMessage: (message: string, messageId?: string) => Promise<void>;
   rewrite: (messageId: string) => void;
+  editMessage: (messageId: string, content: string) => void;
   setChatModelProvider: (provider: ChatModelProvider) => void;
   setEmbeddingModelProvider: (provider: EmbeddingModelProvider) => void;
   projectId: string | null;
@@ -78,6 +75,10 @@ interface EmbeddingModelProvider {
   key: string;
   providerId: string;
 }
+
+const STREAM_STALL_TIMEOUT_MS = 30000;
+const RECONNECT_DELAYS_MS = [1000, 2000, 3000];
+const CONTENT_STALL_TIMEOUT_MS = 120000;
 
 const checkConfig = async (
   setChatModelProvider: (provider: ChatModelProvider) => void,
@@ -264,6 +265,7 @@ export const chatContext = createContext<ChatContext>({
   embeddingModelProvider: { key: '', providerId: '' },
   researchEnded: false,
   rewrite: () => {},
+  editMessage: () => {},
   sendMessage: async () => {},
   setFileIds: () => {},
   setFiles: () => {},
@@ -326,7 +328,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     const saved = localStorage.getItem('optimizationMode');
-    if (saved && ['speed', 'balanced', 'quality'].includes(saved)) {
+    if (saved && ['speed', 'balanced', 'quality', 'superfast'].includes(saved)) {
       setOptimizationModeState(saved);
     }
   }, []);
@@ -450,6 +452,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
   const isReconnectingRef = useRef(false);
   const handledMessageEndRef = useRef<Set<string>>(new Set());
+  const serverSessionIdsRef = useRef<Record<string, string>>({});
 
   const checkReconnect = async () => {
     if (isReconnectingRef.current) return;
@@ -467,38 +470,8 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
         isReconnectingRef.current = true;
 
-        const res = await fetch(`/api/reconnect/${lastMsg.backendId}`, {
-          method: 'POST',
-        });
-
-        if (!res.body) throw new Error('No response body');
-
-        const reader = res.body?.getReader();
-        const decoder = new TextDecoder('utf-8');
-
-        let partialChunk = '';
-
-        const messageHandler = getMessageHandler(lastMsg);
-
         try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-
-            partialChunk += decoder.decode(value, { stream: true });
-
-            try {
-              const messages = partialChunk.split('\n');
-              for (const msg of messages) {
-                if (!msg.trim()) continue;
-                const json = JSON.parse(msg);
-                messageHandler(json);
-              }
-              partialChunk = '';
-            } catch (error) {
-              console.warn('Incomplete JSON, waiting for next chunk...');
-            }
-          }
+          await recoverStream(lastMsg);
         } finally {
           isReconnectingRef.current = false;
         }
@@ -589,7 +562,20 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, [isMessagesLoaded, isConfigReady, newChatCreated]);
 
-  const rewrite = (messageId: string) => {
+  const trimMessagesFrom = async (messageId: string) => {
+    if (!chatId) return;
+
+    try {
+      await fetch(
+        `/api/chats/${chatId}/messages?afterMessageId=${encodeURIComponent(messageId)}`,
+        { method: 'DELETE' },
+      );
+    } catch (error) {
+      console.warn('Failed to trim later messages:', error);
+    }
+  };
+
+  const rewrite = async (messageId: string) => {
     const index = messages.findIndex((msg) => msg.messageId === messageId);
 
     if (index === -1) return;
@@ -599,8 +585,51 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     chatHistory.current = chatHistory.current.slice(0, index * 2);
 
     const messageToRewrite = messages[index];
-    sendMessage(messageToRewrite.query, messageToRewrite.messageId, true);
+    await trimMessagesFrom(messageId);
+    sendMessage(messageToRewrite.query, messageToRewrite.messageId);
   };
+
+  const editMessage = (messageId: string, content: string) => {
+    if (loading) return;
+
+    const trimmed = content.trim();
+    if (!trimmed) return;
+
+    const index = messages.findIndex((msg) => msg.messageId === messageId);
+    if (index === -1 || messages[index].query === trimmed) return;
+
+    setMessages((prev) => prev.slice(0, index));
+    chatHistory.current = chatHistory.current.slice(0, index * 2);
+
+    trimMessagesFrom(messageId).then(() => sendMessage(trimmed, messageId));
+  };
+
+  useEffect(() => {
+    let knownBuildId: string | null = null;
+
+    const checkBuildId = async () => {
+      try {
+        const res = await fetch('/api/version');
+
+        if (!res.ok) return;
+
+        const { buildId } = await res.json();
+
+        if (typeof buildId !== 'string' || !buildId) return;
+
+        if (knownBuildId === null) {
+          knownBuildId = buildId;
+        } else if (buildId !== knownBuildId) {
+          toast.info('Vane was updated — reloading…');
+          setTimeout(() => window.location.reload(), 1200);
+        }
+      } catch {}
+    };
+
+    checkBuildId();
+    const interval = setInterval(checkBuildId, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (isReady && initialMessage && isConfigReady) {
@@ -617,6 +646,11 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     const messageId = message.messageId;
 
     return async (data: any) => {
+      if (data.type === 'sessionId') {
+        serverSessionIdsRef.current[messageId] = String(data.data);
+        return;
+      }
+
       if (data.type === 'error') {
         toast.error(data.data);
         setLoading(false);
@@ -777,10 +811,116 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     };
   };
 
+  const consumeStream = async (res: Response, message: Message) => {
+    if (!res.ok) {
+      let detail = `Request failed with status ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body?.message) detail = String(body.message);
+        if (Array.isArray(body?.error) && body.error[0]?.message) {
+          detail += `: ${body.error[0].path} ${body.error[0].message}`;
+        }
+      } catch {}
+      throw new Error(detail);
+    }
+    if (!res.body) throw new Error('No response body');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    const messageHandler = getMessageHandler(message);
+    let partialChunk = '';
+    let lastDataAt = Date.now();
+    let lastContentAt = Date.now();
+    let stalled = false;
+    let contentStalled = false;
+
+    const watchdog = setInterval(() => {
+      const now = Date.now();
+
+      if (now - lastDataAt > STREAM_STALL_TIMEOUT_MS) {
+        stalled = true;
+        reader.cancel().catch(() => {});
+      } else if (now - lastContentAt > CONTENT_STALL_TIMEOUT_MS) {
+        contentStalled = true;
+        reader.cancel().catch(() => {});
+      }
+    }, 5000);
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        lastDataAt = Date.now();
+        partialChunk += decoder.decode(value, { stream: true });
+
+        try {
+          const lines = partialChunk.split('\n');
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const parsed = JSON.parse(line);
+
+            if (
+              parsed?.type === 'block' ||
+              parsed?.type === 'updateBlock' ||
+              parsed?.type === 'researchComplete' ||
+              parsed?.type === 'messageEnd' ||
+              parsed?.type === 'error'
+            ) {
+              lastContentAt = Date.now();
+            }
+
+            messageHandler(parsed);
+          }
+          partialChunk = '';
+        } catch (error) {
+          console.warn('Incomplete JSON, waiting for next chunk...');
+        }
+      }
+    } finally {
+      clearInterval(watchdog);
+    }
+
+    if (stalled) throw new Error('Stream stalled');
+    if (contentStalled) throw new Error('No answer progress');
+  };
+
+  const recoverStream = async (message: Message) => {
+    setLoading(true);
+
+    const backendId =
+      serverSessionIdsRef.current[message.messageId] || message.backendId;
+
+    for (const delay of RECONNECT_DELAYS_MS) {
+      const sleep = Promise.withResolvers<void>();
+      setTimeout(sleep.resolve, delay);
+      await sleep.promise;
+
+      try {
+        const res = await fetch(`/api/reconnect/${backendId}`, {
+          method: 'POST',
+        });
+        await consumeStream(res, message);
+        return;
+      } catch (error) {
+        console.warn('Reconnect attempt failed:', error);
+      }
+    }
+
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.messageId === message.messageId
+          ? { ...msg, status: 'error' as const }
+          : msg,
+      ),
+    );
+    setLoading(false);
+    toast.error('Lost connection to the server. Please try again.');
+  };
+
   const sendMessage: ChatContext['sendMessage'] = async (
     message,
     messageId,
-    rewrite = false,
   ) => {
     if (loading || !message) return;
     setLoading(true);
@@ -792,6 +932,9 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     messageId = messageId ?? crypto.randomBytes(7).toString('hex');
+    // Edit/rewrite re-send an existing messageId; allow its new messageEnd to
+    // be processed instead of being swallowed by the once-only dedupe.
+    handledMessageEndRef.current.delete(messageId);
     const backendId = crypto.randomBytes(20).toString('hex');
 
     const newMessage: Message = {
@@ -806,69 +949,41 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
     setMessages((prevMessages) => [...prevMessages, newMessage]);
 
-    const messageIndex = messages.findIndex((m) => m.messageId === messageId);
-
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        content: message,
-        message: {
-          messageId: messageId,
-          chatId: chatId!,
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           content: message,
-        },
-        chatId: chatId!,
-        files: fileIds,
-        sources: sources,
-        optimizationMode: optimizationMode,
-        history: rewrite
-          ? chatHistory.current.slice(
-              0,
-              messageIndex === -1 ? undefined : messageIndex,
-            )
-          : chatHistory.current,
-        chatModel: {
-          key: chatModelProvider.key,
-          providerId: chatModelProvider.providerId,
-        },
-        embeddingModel: {
-          key: embeddingModelProvider.key,
-          providerId: embeddingModelProvider.providerId,
-        },
-        systemInstructions: localStorage.getItem('systemInstructions'),
-        projectId: projectId || undefined,
-      }),
-    });
+          message: {
+            messageId: messageId,
+            chatId: chatId!,
+            content: message,
+          },
+          chatId: chatId!,
+          files: fileIds,
+          sources: sources,
+          optimizationMode: optimizationMode,
+          history: chatHistory.current,
+          chatModel: {
+            key: chatModelProvider.key,
+            providerId: chatModelProvider.providerId,
+          },
+          embeddingModel: {
+            key: embeddingModelProvider.key,
+            providerId: embeddingModelProvider.providerId,
+          },
+          systemInstructions: localStorage.getItem('systemInstructions'),
+          projectId: projectId || undefined,
+        }),
+      });
 
-    if (!res.body) throw new Error('No response body');
-
-    const reader = res.body?.getReader();
-    const decoder = new TextDecoder('utf-8');
-
-    let partialChunk = '';
-
-    const messageHandler = getMessageHandler(newMessage);
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      partialChunk += decoder.decode(value, { stream: true });
-
-      try {
-        const messages = partialChunk.split('\n');
-        for (const msg of messages) {
-          if (!msg.trim()) continue;
-          const json = JSON.parse(msg);
-          messageHandler(json);
-        }
-        partialChunk = '';
-      } catch (error) {
-        console.warn('Incomplete JSON, waiting for next chunk...');
-      }
+      await consumeStream(res, newMessage);
+    } catch (error) {
+      console.warn('Chat stream interrupted, reconnecting:', error);
+      await recoverStream(newMessage);
     }
   };
 
@@ -894,6 +1009,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
         setSources,
         setOptimizationMode,
         rewrite,
+        editMessage,
         sendMessage,
         setChatModelProvider,
         chatModelProvider,

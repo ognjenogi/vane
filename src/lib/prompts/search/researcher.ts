@@ -319,7 +319,7 @@ const getQualityPrompt = (
 
 export const getResearcherPrompt = (
   actionDesc: string,
-  mode: 'speed' | 'balanced' | 'quality',
+  mode: 'speed' | 'balanced' | 'quality' | 'superfast',
   i: number,
   maxIteration: number,
   fileIds: string[],
@@ -337,6 +337,9 @@ export const getResearcherPrompt = (
 
   switch (mode) {
     case 'speed':
+      prompt = getSpeedPrompt(actionDesc, i, maxIteration, fileDesc);
+      break;
+    case 'superfast':
       prompt = getSpeedPrompt(actionDesc, i, maxIteration, fileDesc);
       break;
     case 'balanced':
