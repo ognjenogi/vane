@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import OpenAI from 'openai';
 import BaseLLM from '../../base/llm';
 import { zodTextFormat, zodResponseFormat } from 'openai/helpers/zod';
@@ -27,15 +28,39 @@ type OpenAIConfig = {
   options?: GenerateOptions;
 };
 
+// Stable for the lifetime of the server process so the OpenCode gateway can
+// route requests efficiently and keep prompt-cache affinity per conversation.
+const opencodeSessionId = randomUUID();
+
 class OpenAILLM extends BaseLLM<OpenAIConfig> {
   openAIClient: OpenAI;
 
   constructor(protected config: OpenAIConfig) {
     super(config);
 
+    // OpenCode Go (https://opencode.ai/zen/) rejects requests without a
+    // stable `x-opencode-session` header (400 MissingSessionID) and asks
+    // clients to identify themselves with their own user agent.
+    const defaultHeaders: Record<string, string> = {};
+    if (this.config.baseURL) {
+      try {
+        const url = new URL(this.config.baseURL);
+        if (
+          url.hostname.endsWith('opencode.ai') &&
+          url.pathname.startsWith('/zen')
+        ) {
+          defaultHeaders['x-opencode-session'] = opencodeSessionId;
+          defaultHeaders['User-Agent'] = 'Vane/1.0';
+        }
+      } catch {
+        // Invalid URL: the OpenAI SDK will surface it as usual.
+      }
+    }
+
     this.openAIClient = new OpenAI({
       apiKey: this.config.apiKey,
       baseURL: this.config.baseURL || 'https://api.openai.com/v1',
+      ...(Object.keys(defaultHeaders).length > 0 ? { defaultHeaders } : {}),
     });
   }
 
