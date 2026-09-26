@@ -60,6 +60,8 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
     this.openAIClient = new OpenAI({
       apiKey: this.config.apiKey,
       baseURL: this.config.baseURL || 'https://api.openai.com/v1',
+      timeout: 45 * 1000,
+      maxRetries: 1,
       ...(Object.keys(defaultHeaders).length > 0 ? { defaultHeaders } : {}),
     });
   }

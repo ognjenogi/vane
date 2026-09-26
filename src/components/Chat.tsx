@@ -86,7 +86,7 @@ const Chat = () => {
       <div ref={messageEnd} className="h-0" />
       {dividerWidth > 0 && (
         <div
-          className="fixed z-40 bottom-24 lg:bottom-6"
+          className="fixed z-40 bottom-24 lg:bottom-6 left-4 right-4 lg:left-auto lg:right-auto"
           style={{ width: dividerWidth }}
         >
           <div

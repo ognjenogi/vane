@@ -910,12 +910,26 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     setMessages((prev) =>
       prev.map((msg) =>
         msg.messageId === message.messageId
-          ? { ...msg, status: 'error' as const }
+          ? {
+              ...msg,
+              status: 'error' as const,
+              responseBlocks:
+                msg.responseBlocks.length > 0
+                  ? msg.responseBlocks
+                  : [
+                      {
+                        id: crypto.randomBytes(7).toString('hex'),
+                        type: 'text',
+                        data: 'Could not connect to model or request timed out. Please check your model API key, credit balance, or try another model.',
+                      },
+                    ],
+            }
           : msg,
       ),
     );
+    setMessageAppeared(true);
     setLoading(false);
-    toast.error('Lost connection to the server. Please try again.');
+    toast.error('Lost connection to the server or model timed out.');
   };
 
   const sendMessage: ChatContext['sendMessage'] = async (
@@ -949,6 +963,8 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
     setMessages((prevMessages) => [...prevMessages, newMessage]);
 
+    const messageIndex = messages.findIndex((m) => m.messageId === messageId);
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -966,7 +982,12 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
           files: fileIds,
           sources: sources,
           optimizationMode: optimizationMode,
-          history: chatHistory.current,
+          history: rewrite
+            ? chatHistory.current.slice(
+                0,
+                messageIndex === -1 ? undefined : messageIndex,
+              )
+            : chatHistory.current,
           chatModel: {
             key: chatModelProvider.key,
             providerId: chatModelProvider.providerId,
@@ -984,6 +1005,8 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     } catch (error) {
       console.warn('Chat stream interrupted, reconnecting:', error);
       await recoverStream(newMessage);
+    } finally {
+      setLoading(false);
     }
   };
 
