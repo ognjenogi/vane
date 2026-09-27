@@ -51,7 +51,11 @@ type ChatContext = {
   setSources: (sources: string[]) => void;
   setFiles: (files: File[]) => void;
   setFileIds: (fileIds: string[]) => void;
-  sendMessage: (message: string, messageId?: string) => Promise<void>;
+  sendMessage: (
+    message: string,
+    messageId?: string,
+    rewrite?: boolean,
+  ) => Promise<void>;
   rewrite: (messageId: string) => void;
   editMessage: (messageId: string, content: string) => void;
   setChatModelProvider: (provider: ChatModelProvider) => void;
@@ -586,7 +590,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
     const messageToRewrite = messages[index];
     await trimMessagesFrom(messageId);
-    sendMessage(messageToRewrite.query, messageToRewrite.messageId);
+    sendMessage(messageToRewrite.query, messageToRewrite.messageId, true);
   };
 
   const editMessage = (messageId: string, content: string) => {
@@ -935,6 +939,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
   const sendMessage: ChatContext['sendMessage'] = async (
     message,
     messageId,
+    rewrite = false,
   ) => {
     if (loading || !message) return;
     setLoading(true);
