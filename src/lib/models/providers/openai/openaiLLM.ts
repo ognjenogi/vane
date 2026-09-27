@@ -60,8 +60,8 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
     this.openAIClient = new OpenAI({
       apiKey: this.config.apiKey,
       baseURL: this.config.baseURL || 'https://api.openai.com/v1',
-      timeout: 45 * 1000,
-      maxRetries: 1,
+      timeout: 30 * 1000,
+      maxRetries: 0,
       ...(Object.keys(defaultHeaders).length > 0 ? { defaultHeaders } : {}),
     });
   }
@@ -254,6 +254,16 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
         response_format: zodResponseFormat(input.schema, 'object'),
       });
     } catch (parseErr: any) {
+      const isFatal =
+        parseErr?.status === 401 ||
+        parseErr?.status === 402 ||
+        parseErr?.status === 429 ||
+        /usage limit|rate limit|quota|credit|unauthorized|billing/i.test(
+          parseErr?.message || '',
+        );
+      if (isFatal) {
+        throw parseErr;
+      }
       // Fallback for models/providers (like certain OpenRouter models) that reject json_schema
       try {
         response = await this.openAIClient.chat.completions.create({
@@ -264,6 +274,16 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
           response_format: { type: 'json_object' },
         });
       } catch (jsonErr: any) {
+        if (
+          jsonErr?.status === 401 ||
+          jsonErr?.status === 402 ||
+          jsonErr?.status === 429 ||
+          /usage limit|rate limit|quota|credit|unauthorized|billing/i.test(
+            jsonErr?.message || '',
+          )
+        ) {
+          throw jsonErr;
+        }
         response = await this.openAIClient.chat.completions.create({
           messages: this.convertToOpenAIMessages(input.messages),
           model: this.config.model,

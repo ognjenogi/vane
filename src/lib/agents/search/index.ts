@@ -65,7 +65,17 @@ class SearchAgent {
           },
           input.config.mode === 'superfast' ? 2500 : 4000,
         );
-      } catch (err) {
+      } catch (err: any) {
+        const isFatalQuotaOrAuth =
+          err?.status === 401 ||
+          err?.status === 402 ||
+          err?.status === 429 ||
+          /usage limit|rate limit|quota|credit|unauthorized|billing/i.test(
+            err?.message || '',
+          );
+        if (isFatalQuotaOrAuth) {
+          throw err;
+        }
         console.warn('Classification failed, using defaults:', err);
         classification = {
           classification: {
@@ -126,6 +136,16 @@ class SearchAgent {
               config: input.config,
             })
             .catch((err) => {
+              const isFatalQuotaOrAuth =
+                err?.status === 401 ||
+                err?.status === 402 ||
+                err?.status === 429 ||
+                /usage limit|rate limit|quota|credit|unauthorized|billing/i.test(
+                  err?.message || '',
+                );
+              if (isFatalQuotaOrAuth) {
+                throw err;
+              }
               console.error('Researcher failed:', err);
               return null;
             });

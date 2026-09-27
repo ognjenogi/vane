@@ -63,7 +63,17 @@ export const classify = async (
     ]);
 
     return output;
-  } catch (err) {
+  } catch (err: any) {
+    const isFatalQuotaOrAuth =
+      err?.status === 401 ||
+      err?.status === 402 ||
+      err?.status === 429 ||
+      /usage limit|rate limit|quota|credit|unauthorized|billing/i.test(
+        err?.message || '',
+      );
+    if (isFatalQuotaOrAuth) {
+      throw err;
+    }
     console.warn('Classification failed, using defaults:', err instanceof Error ? err.message : err);
     return {
       classification: {

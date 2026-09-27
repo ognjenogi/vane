@@ -10,7 +10,7 @@ type AnswerModelWithProviderConfig = AnswerModel & {
   config?: { model?: string };
 };
 
-const GENERATION_STALL_TIMEOUT_MS = 90000;
+const GENERATION_STALL_TIMEOUT_MS = 35000;
 
 export const formatModelError = (
   err: unknown,
@@ -30,7 +30,7 @@ export const formatModelError = (
       errMsg,
     )
   ) {
-    return `💳 **API Credits Empty**: Your account for model "${modelName}" has run out of credits or reached its billing limit. Please check your credit balance or choose another model.`;
+    return `💳 **API Credits Empty**: Your account for model "${modelName}" has run out of credits or reached its billing limit (${errMsg}). Please check your credit balance or choose another model.`;
   }
 
   if (
@@ -54,9 +54,11 @@ export const formatModelError = (
 
   if (
     status === 429 ||
-    /rate limit|too many requests|tokens per minute|tpm|rpm/i.test(errMsg)
+    /rate limit|usage limit|limit exceeded|too many requests|tokens per minute|tpm|rpm/i.test(
+      errMsg,
+    )
   ) {
-    return `⏳ **Rate Limit Exceeded**: Model "${modelName}" is temporarily rate-limited. Please wait a moment or choose another model.`;
+    return `⏳ **Rate / Usage Limit Exceeded**: Model "${modelName}" has reached its usage or rate limit (${errMsg}). Please wait for your quota window to reset or choose another model.`;
   }
 
   return `⚠️ **Generation Error**: Model "${modelName}" encountered an issue (${errMsg}). Please select another model or try again.`;
