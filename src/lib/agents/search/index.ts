@@ -136,6 +136,24 @@ class SearchAgent {
           searchPromise,
         ]);
 
+        if (session.isAborted?.()) {
+          session.emit('end', {});
+          await db
+            .update(messages)
+            .set({
+              status: 'completed',
+              responseBlocks: session.getAllBlocks(),
+            })
+            .where(
+              and(
+                eq(messages.chatId, input.chatId),
+                eq(messages.messageId, input.messageId),
+              ),
+            )
+            .execute();
+          return;
+        }
+
         session.emit('data', {
           type: 'researchComplete',
         });

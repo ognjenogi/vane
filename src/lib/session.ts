@@ -23,6 +23,16 @@ class SessionManager {
       timer: NodeJS.Timeout;
     }
   >();
+  private aborted = false;
+
+  abort() {
+    this.aborted = true;
+    this.emitter.emit('abort', {});
+  }
+
+  isAborted(): boolean {
+    return this.aborted;
+  }
 
   constructor(id?: string) {
     this.id = id ?? crypto.randomUUID();

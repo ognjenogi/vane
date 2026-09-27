@@ -90,7 +90,17 @@ export const streamAnswer = async (input: {
     };
 
     while (true) {
+      if (input.session.isAborted?.()) {
+        await iterator.return?.(undefined);
+        break;
+      }
+
       const next = await nextWithTimeout();
+
+      if (input.session.isAborted?.()) {
+        await iterator.return?.(undefined);
+        break;
+      }
 
       if (next === null) {
         await iterator.return(undefined);
@@ -125,6 +135,9 @@ export const streamAnswer = async (input: {
       }
     }
   } catch (streamErr) {
+    if (input.session.isAborted?.()) {
+      return;
+    }
     console.error('Answer streaming failed:', streamErr);
     // BaseLLM exposes its provider config as protected; read the model name for the error text.
     const { config } = input.llm as AnswerModelWithProviderConfig;

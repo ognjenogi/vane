@@ -68,6 +68,9 @@ class Researcher {
     const MAX_RESEARCH_TIME_MS = 25000; // 25 second max for entire research
 
     for (let i = 0; i < maxIteration; i++) {
+      if (session.isAborted?.()) {
+        break;
+      }
       // Timeout guard
       if (Date.now() - researchStartTime > MAX_RESEARCH_TIME_MS) {
         console.warn('Research loop timed out');
@@ -100,6 +103,9 @@ class Researcher {
       let finalToolCalls: ToolCall[] = [];
 
       for await (const partialRes of actionStream) {
+        if (session.isAborted?.()) {
+          break;
+        }
         if (partialRes.toolCallChunk.length > 0) {
           partialRes.toolCallChunk.forEach((tc) => {
             if (
