@@ -12,6 +12,56 @@ type AnswerModelWithProviderConfig = AnswerModel & {
 
 const GENERATION_STALL_TIMEOUT_MS = 90000;
 
+export const formatModelError = (
+  err: unknown,
+  modelName: string = 'selected model',
+): string => {
+  const errMsg = err instanceof Error ? err.message : String(err || '');
+  const status =
+    (err as any)?.status ||
+    (err as any)?.statusCode ||
+    (err as any)?.error?.code ||
+    (err as any)?.code;
+
+  if (
+    status === 402 ||
+    status === 'insufficient_quota' ||
+    /credit|quota|billing|balance|payment|exceeded.*quota|insufficient/i.test(
+      errMsg,
+    )
+  ) {
+    return `💳 **API Credits Empty**: Your account for model "${modelName}" has run out of credits or reached its billing limit. Please check your credit balance or choose another model.`;
+  }
+
+  if (
+    status === 408 ||
+    status === 504 ||
+    /timeout|timed out|abort|deadline|produced no output/i.test(errMsg) ||
+    (err as any)?.name === 'APIConnectionTimeoutError'
+  ) {
+    return `⏱️ **Request Timed Out**: Model "${modelName}" took too long to respond. The provider may be experiencing high latency or downtime. Please try again or choose another model.`;
+  }
+
+  if (
+    status === 401 ||
+    status === 403 ||
+    /unauthorized|invalid api key|incorrect api key|authentication|access denied/i.test(
+      errMsg,
+    )
+  ) {
+    return `🔑 **Authentication Failed**: The API key for model "${modelName}" is invalid or unauthorized. Please verify your API key in Settings.`;
+  }
+
+  if (
+    status === 429 ||
+    /rate limit|too many requests|tokens per minute|tpm|rpm/i.test(errMsg)
+  ) {
+    return `⏳ **Rate Limit Exceeded**: Model "${modelName}" is temporarily rate-limited. Please wait a moment or choose another model.`;
+  }
+
+  return `⚠️ **Generation Error**: Model "${modelName}" encountered an issue (${errMsg}). Please select another model or try again.`;
+};
+
 export const streamAnswer = async (input: {
   session: SessionManager;
   llm: AnswerModel;
@@ -79,12 +129,10 @@ export const streamAnswer = async (input: {
     // BaseLLM exposes its provider config as protected; read the model name for the error text.
     const { config } = input.llm as AnswerModelWithProviderConfig;
     const modelName = config?.model || 'selected model';
-    const errMsg =
-      streamErr instanceof Error ? streamErr.message : String(streamErr);
     input.session.emitBlock({
       id: crypto.randomUUID(),
       type: 'text',
-      data: `I encountered an issue generating the answer with model "${modelName}" (${errMsg}). Please select another model or try again.`,
+      data: formatModelError(streamErr, modelName),
     });
   }
 };

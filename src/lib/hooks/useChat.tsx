@@ -56,6 +56,7 @@ type ChatContext = {
     messageId?: string,
     rewrite?: boolean,
   ) => Promise<void>;
+  stopGeneration: () => void;
   rewrite: (messageId: string) => void;
   editMessage: (messageId: string, content: string) => void;
   setChatModelProvider: (provider: ChatModelProvider) => void;
@@ -271,6 +272,7 @@ export const chatContext = createContext<ChatContext>({
   rewrite: () => {},
   editMessage: () => {},
   sendMessage: async () => {},
+  stopGeneration: () => {},
   setFileIds: () => {},
   setFiles: () => {},
   setSources: () => {},
@@ -364,6 +366,29 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
   const [isReady, setIsReady] = useState(false);
 
   const messagesRef = useRef<Message[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const activeReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+
+  const stopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (activeReaderRef.current) {
+      activeReaderRef.current.cancel().catch(() => {});
+      activeReaderRef.current = null;
+    }
+    setLoading(false);
+    setResearchEnded(true);
+    setMessageAppeared(true);
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.status === 'answering'
+          ? { ...msg, status: 'completed' as const }
+          : msg,
+      ),
+    );
+  };
 
   const sections = useMemo<Section[]>(() => {
     return messages.map((msg) => {
@@ -658,10 +683,25 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
       if (data.type === 'error') {
         toast.error(data.data);
         setLoading(false);
+        setResearchEnded(true);
+        setMessageAppeared(true);
         setMessages((prev) =>
           prev.map((msg) =>
             msg.messageId === messageId
-              ? { ...msg, status: 'error' as const }
+              ? {
+                  ...msg,
+                  status: 'error' as const,
+                  responseBlocks:
+                    msg.responseBlocks.length > 0
+                      ? msg.responseBlocks
+                      : [
+                          {
+                            id: crypto.randomBytes(7).toString('hex'),
+                            type: 'text',
+                            data: data.data,
+                          },
+                        ],
+                }
               : msg,
           ),
         );
@@ -830,6 +870,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     if (!res.body) throw new Error('No response body');
 
     const reader = res.body.getReader();
+    activeReaderRef.current = reader;
     const decoder = new TextDecoder('utf-8');
     const messageHandler = getMessageHandler(message);
     let partialChunk = '';
@@ -883,6 +924,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
       }
     } finally {
       clearInterval(watchdog);
+      activeReaderRef.current = null;
     }
 
     if (stalled) throw new Error('Stream stalled');
@@ -890,25 +932,46 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   const recoverStream = async (message: Message) => {
+    if (abortControllerRef.current?.signal.aborted) {
+      return;
+    }
     setLoading(true);
 
     const backendId =
       serverSessionIdsRef.current[message.messageId] || message.backendId;
 
     for (const delay of RECONNECT_DELAYS_MS) {
+      if (abortControllerRef.current?.signal.aborted) {
+        return;
+      }
       const sleep = Promise.withResolvers<void>();
       setTimeout(sleep.resolve, delay);
       await sleep.promise;
 
+      if (abortControllerRef.current?.signal.aborted) {
+        return;
+      }
+
       try {
         const res = await fetch(`/api/reconnect/${backendId}`, {
           method: 'POST',
+          signal: abortControllerRef.current?.signal,
         });
         await consumeStream(res, message);
         return;
-      } catch (error) {
+      } catch (error: any) {
+        if (
+          error?.name === 'AbortError' ||
+          abortControllerRef.current?.signal.aborted
+        ) {
+          return;
+        }
         console.warn('Reconnect attempt failed:', error);
       }
+    }
+
+    if (abortControllerRef.current?.signal.aborted) {
+      return;
     }
 
     setMessages((prev) =>
@@ -931,6 +994,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
           : msg,
       ),
     );
+    setResearchEnded(true);
     setMessageAppeared(true);
     setLoading(false);
     toast.error('Lost connection to the server or model timed out.');
@@ -969,10 +1033,13 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     setMessages((prevMessages) => [...prevMessages, newMessage]);
 
     const messageIndex = messages.findIndex((m) => m.messageId === messageId);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -1007,10 +1074,15 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
       });
 
       await consumeStream(res, newMessage);
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError' || controller.signal.aborted) {
+        console.log('Chat generation stopped by user');
+        return;
+      }
       console.warn('Chat stream interrupted, reconnecting:', error);
       await recoverStream(newMessage);
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
     }
   };
@@ -1039,6 +1111,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
         rewrite,
         editMessage,
         sendMessage,
+        stopGeneration,
         setChatModelProvider,
         chatModelProvider,
         embeddingModelProvider,

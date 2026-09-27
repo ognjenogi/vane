@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { ArrowUp } from 'lucide-react';
+import { ArrowUp, Square } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
 import AttachSmall from './MessageInputActions/AttachSmall';
@@ -9,7 +9,7 @@ import VoiceRecorderButton from './VoiceRecorderButton';
 import { useChat } from '@/lib/hooks/useChat';
 
 const MessageInput = () => {
-  const { loading, sendMessage } = useChat();
+  const { loading, sendMessage, stopGeneration } = useChat();
 
   const [copilotEnabled, setCopilotEnabled] = useState(false);
   const [message, setMessage] = useState('');
@@ -99,22 +99,50 @@ const MessageInput = () => {
               <Optimization placement="up" />
             </div>
 
+            {loading ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  stopGeneration();
+                }}
+                className="sm:hidden bg-black dark:bg-white text-white dark:text-black hover:opacity-85 transition duration-100 rounded-full p-2 shrink-0 flex items-center justify-center"
+                aria-label="Stop generation"
+              >
+                <Square size={15} className="fill-current" />
+              </button>
+            ) : (
+              <button
+                disabled={message.trim().length === 0}
+                className="sm:hidden bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0"
+                aria-label="Send message"
+              >
+                <ArrowUp className="bg-background" size={17} />
+              </button>
+            )}
+          </div>
+
+          {loading ? (
             <button
-              disabled={message.trim().length === 0 || loading}
-              className="sm:hidden bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0"
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                stopGeneration();
+              }}
+              className="hidden sm:flex order-3 bg-black dark:bg-white text-white dark:text-black hover:opacity-85 transition duration-100 rounded-full p-2 shrink-0 ml-1 items-center justify-center"
+              aria-label="Stop generation"
+            >
+              <Square size={15} className="fill-current" />
+            </button>
+          ) : (
+            <button
+              disabled={message.trim().length === 0}
+              className="hidden sm:flex order-3 bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0 ml-1"
               aria-label="Send message"
             >
               <ArrowUp className="bg-background" size={17} />
             </button>
-          </div>
-
-          <button
-            disabled={message.trim().length === 0 || loading}
-            className="hidden sm:flex order-3 bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0 ml-1"
-            aria-label="Send message"
-          >
-            <ArrowUp className="bg-background" size={17} />
-          </button>
+          )}
         </>
       )}
 
@@ -131,12 +159,27 @@ const MessageInput = () => {
             <ModelSelector placement="top-start" />
             <Optimization placement="up" />
           </div>
-          <button
-            disabled={message.trim().length === 0 || loading}
-            className="bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0"
-          >
-            <ArrowUp className="bg-background" size={17} />
-          </button>
+          {loading ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                stopGeneration();
+              }}
+              className="bg-black dark:bg-white text-white dark:text-black hover:opacity-85 transition duration-100 rounded-full p-2 shrink-0 flex items-center justify-center"
+              aria-label="Stop generation"
+            >
+              <Square size={15} className="fill-current" />
+            </button>
+          ) : (
+            <button
+              disabled={message.trim().length === 0}
+              className="bg-[#24A0ED] text-white disabled:text-black/50 dark:disabled:text-white/50 hover:bg-opacity-85 transition duration-100 disabled:bg-[#e0e0dc79] dark:disabled:bg-[#ececec21] rounded-full p-2 shrink-0"
+              aria-label="Send message"
+            >
+              <ArrowUp className="bg-background" size={17} />
+            </button>
+          )}
         </div>
       )}
     </form>

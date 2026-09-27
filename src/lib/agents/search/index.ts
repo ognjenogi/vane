@@ -7,7 +7,7 @@ import { WidgetExecutor } from './widgets';
 import db from '@/lib/db';
 import { messages } from '@/lib/db/schema';
 import { and, eq, gt } from 'drizzle-orm';
-import { streamAnswer } from './answerStream';
+import { streamAnswer, formatModelError } from './answerStream';
 import { runSuperfast } from './superfast';
 import { getTokenCount } from '@/lib/utils/splitText';
 
@@ -209,10 +209,12 @@ class SearchAgent {
       session.emit('data', {
         type: 'researchComplete',
       });
+      const modelName =
+        (input.config.llm as any)?.config?.model || 'selected model';
       session.emitBlock({
         id: crypto.randomUUID(),
         type: 'text',
-        data: 'An unexpected error occurred while processing your request. Please try again.',
+        data: formatModelError(globalErr, modelName),
       });
       session.emit('end', {});
 
