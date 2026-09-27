@@ -32,6 +32,7 @@ const ModelSelector = ({
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [selectedSubscription, setSelectedSubscription] = useState('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const { setChatModelProvider, chatModelProvider } = useChat();
@@ -158,6 +159,13 @@ const ModelSelector = ({
     return [selectedProvider, ...remainingProviders];
   }, [providers, chatModelProvider]);
 
+  const subscriptions = useMemo(() => {
+    return [
+      { id: 'all', label: 'All' },
+      ...providers.map((p) => ({ id: p.id, label: p.name })),
+    ];
+  }, [providers]);
+
   const filteredProviders = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return orderedProviders
@@ -174,8 +182,13 @@ const ModelSelector = ({
           return matchesSearch && matchesCat;
         }),
       }))
-      .filter((provider) => provider.chatModels.length > 0);
-  }, [orderedProviders, searchQuery, selectedCategory]);
+      .filter((provider) => {
+        const matchesSubscription =
+          selectedSubscription === 'all' ||
+          provider.id === selectedSubscription;
+        return matchesSubscription && provider.chatModels.length > 0;
+      });
+  }, [orderedProviders, searchQuery, selectedCategory, selectedSubscription]);
 
   const totalModelCount = useMemo(() => {
     return filteredProviders.reduce((acc, p) => acc + p.chatModels.length, 0);
@@ -334,6 +347,24 @@ const ModelSelector = ({
                       <div className="ml-auto pl-2 text-[10px] text-black/40 dark:text-white/40 whitespace-nowrap shrink-0">
                         {totalModelCount} models
                       </div>
+                    </div>
+                    {/* Subscription Filter Chips */}
+                    <div className="px-2.5 pb-2 border-b border-light-200/70 dark:border-dark-200/50 flex items-center gap-1 overflow-x-auto no-scrollbar">
+                      {subscriptions.map((sub) => (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          onClick={() => setSelectedSubscription(sub.id)}
+                          className={cn(
+                            'px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition cursor-pointer',
+                            selectedSubscription === sub.id
+                              ? 'bg-violet-500 text-white shadow-xs'
+                              : 'bg-light-secondary dark:bg-dark-secondary/60 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white hover:bg-light-200 dark:hover:bg-dark-200',
+                          )}
+                        >
+                          {sub.label}
+                        </button>
+                      ))}
                     </div>
 
                     {/* Scrollable Models List */}
