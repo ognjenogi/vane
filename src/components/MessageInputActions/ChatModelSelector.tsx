@@ -3,7 +3,7 @@
 import { Cpu, Loader2, Search, RefreshCw, Check, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { MinimalProvider } from '@/lib/models/types';
 import { useChat } from '@/lib/hooks/useChat';
 import { AnimatePresence, motion } from 'motion/react';
@@ -34,6 +34,38 @@ const ModelSelector = ({
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedSubscription, setSelectedSubscription] = useState('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [panelMaxH, setPanelMaxH] = useState<number | null>(null);
+  const [panelPos, setPanelPos] = useState<'up' | 'down' | null>(null);
+
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  // The desktop panel is an absolutely-positioned popover anchored to the
+  // trigger button. Decide which side to open on (and cap the height to the
+  // space available) at open time so the panel is never clipped — e.g. on
+  // the new-chat page, where the button sits high on screen and a fixed
+  // upward-opening panel would overflow the top of the viewport.
+  const computePanelPosition = () => {
+    if (window.innerWidth < 640) {
+      // Mobile renders a fixed bottom sheet with its own CSS height.
+      setPanelMaxH(null);
+      setPanelPos(null);
+      return;
+    }
+    const btn = triggerRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const PANEL = 460;
+    const up = r.top - 16;
+    const down = window.innerHeight - r.bottom - 16;
+    let openUp: boolean;
+    if (up >= PANEL) openUp = true;
+    else if (down >= PANEL) openUp = false;
+    else openUp = up >= down;
+    setPanelPos(openUp ? 'up' : 'down');
+    setPanelMaxH(
+      Math.floor(Math.min(PANEL, Math.max(120, openUp ? up : down))),
+    );
+  };
 
   const { setChatModelProvider, chatModelProvider } = useChat();
 
@@ -195,7 +227,16 @@ const ModelSelector = ({
   }, [filteredProviders]);
 
   const placementClasses = useMemo(() => {
-    switch (placement) {
+    // Effective vertical side: computePanelPosition may flip the panel
+    // below the button when there is more room there.
+    const vertical = panelPos === 'down' ? 'bottom' : 'top';
+    const horizontal = placement.endsWith('start') ? 'start' : 'end';
+    const effective = `${vertical}-${horizontal}` as
+      | 'top-start'
+      | 'top-end'
+      | 'bottom-start'
+      | 'bottom-end';
+    switch (effective) {
       case 'top-start':
         return 'sm:bottom-full sm:mb-2 sm:left-0 sm:origin-bottom-left';
       case 'top-end':
@@ -206,7 +247,7 @@ const ModelSelector = ({
       default:
         return 'sm:top-full sm:mt-2 sm:right-0 sm:origin-top-right';
     }
-  }, [placement]);
+  }, [placement, panelPos]);
 
   const displayName = useMemo(() => {
     if (!currentModel) return 'Select Model';
@@ -218,6 +259,8 @@ const ModelSelector = ({
       {({ open, close }) => (
         <>
           <PopoverButton
+            onClick={computePanelPosition}
+            ref={triggerRef}
             type="button"
             title={
               currentModel
@@ -271,11 +314,22 @@ const ModelSelector = ({
                   static
                 >
                   <motion.div
-                    initial={{ opacity: 0, y: 30, scale: 0.98 }}
+                    initial={
+                      panelPos === 'down'
+                        ? { opacity: 0, y: -30, scale: 0.98 }
+                        : { opacity: 0, y: 30, scale: 0.98 }
+                    }
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 30, scale: 0.98 }}
+                    exit={
+                      panelPos === 'down'
+                        ? { opacity: 0, y: -30, scale: 0.98 }
+                        : { opacity: 0, y: 30, scale: 0.98 }
+                    }
                     transition={{ duration: 0.15, ease: 'easeOut' }}
                     className="bg-light-primary dark:bg-dark-primary border-t sm:border border-light-200 dark:border-dark-200/80 rounded-t-2xl sm:rounded-xl w-full flex flex-col shadow-2xl overflow-hidden backdrop-blur-md max-h-[82vh] sm:max-h-[460px] pb-5 sm:pb-0"
+                    style={
+                      panelMaxH != null ? { maxHeight: panelMaxH } : undefined
+                    }
                   >
                     {/* Mobile drag handle bar */}
                     <div className="w-10 h-1 bg-black/20 dark:bg-white/20 rounded-full mx-auto my-2.5 sm:hidden shrink-0" />
@@ -327,44 +381,48 @@ const ModelSelector = ({
                       </button>
                     </div>
 
-                    {/* Category Filter Chips */}
-                    <div className="px-2.5 py-2 border-b border-light-200/70 dark:border-dark-200/50 flex items-center gap-1 overflow-x-auto no-scrollbar">
-                      {CATEGORIES.map((cat) => (
-                        <button
-                          key={cat.id}
-                          type="button"
-                          onClick={() => setSelectedCategory(cat.id)}
-                          className={cn(
-                            'px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition cursor-pointer',
-                            selectedCategory === cat.id
-                              ? 'bg-sky-500 text-white shadow-xs'
-                              : 'bg-light-secondary dark:bg-dark-secondary/60 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white hover:bg-light-200 dark:hover:bg-dark-200',
-                          )}
-                        >
-                          {cat.label}
-                        </button>
-                      ))}
-                      <div className="ml-auto pl-2 text-[10px] text-black/40 dark:text-white/40 whitespace-nowrap shrink-0">
-                        {totalModelCount} models
+                    {/* Filters: model family (top) + source/subscription (bottom) */}
+                    <div className="px-2.5 py-2 space-y-1.5 border-b border-light-200/70 dark:border-dark-200/50">
+                      <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                        {CATEGORIES.map((cat) => (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => setSelectedCategory(cat.id)}
+                            className={cn(
+                              'px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition cursor-pointer',
+                              selectedCategory === cat.id
+                                ? 'bg-sky-500 text-white shadow-xs'
+                                : 'bg-light-secondary dark:bg-dark-secondary/60 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white hover:bg-light-200 dark:hover:bg-dark-200',
+                            )}
+                          >
+                            {cat.label}
+                          </button>
+                        ))}
+                        <div className="ml-auto pl-2 text-[10px] text-black/40 dark:text-white/40 whitespace-nowrap shrink-0">
+                          {totalModelCount} models
+                        </div>
                       </div>
-                    </div>
-                    {/* Subscription Filter Chips */}
-                    <div className="px-2.5 pb-2 border-b border-light-200/70 dark:border-dark-200/50 flex items-center gap-1 overflow-x-auto no-scrollbar">
-                      {subscriptions.map((sub) => (
-                        <button
-                          key={sub.id}
-                          type="button"
-                          onClick={() => setSelectedSubscription(sub.id)}
-                          className={cn(
-                            'px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition cursor-pointer',
-                            selectedSubscription === sub.id
-                              ? 'bg-violet-500 text-white shadow-xs'
-                              : 'bg-light-secondary dark:bg-dark-secondary/60 text-black/60 dark:text-white/60 hover:text-black dark:hover:text-white hover:bg-light-200 dark:hover:bg-dark-200',
-                          )}
-                        >
-                          {sub.label}
-                        </button>
-                      ))}
+                      <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                        <span className="pr-0.5 text-[10px] font-semibold uppercase tracking-wider text-black/40 dark:text-white/40 shrink-0">
+                          Source
+                        </span>
+                        {subscriptions.map((sub) => (
+                          <button
+                            key={sub.id}
+                            type="button"
+                            onClick={() => setSelectedSubscription(sub.id)}
+                            className={cn(
+                              'px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap transition cursor-pointer',
+                              selectedSubscription === sub.id
+                                ? 'bg-violet-500 text-white shadow-xs'
+                                : 'bg-transparent text-black/50 dark:text-white/50 hover:text-black dark:hover:text-white',
+                            )}
+                          >
+                            {sub.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
                     {/* Scrollable Models List */}
