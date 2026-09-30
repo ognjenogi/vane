@@ -3,6 +3,7 @@ const path = require('path');
 
 module.exports = defineConfig({
   resolve: { alias: { '@': path.resolve(__dirname, './src') } },
+  esbuild: { jsx: 'automatic' },
   test: {
     environment: 'node',
     include: ['src/**/*.test.{ts,tsx}'],
