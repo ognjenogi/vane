@@ -18,6 +18,7 @@ import { MinimalProvider } from '../models/types';
 import { getAutoMediaSearch } from '../config/clientRegistry';
 import { applyPatch } from 'rfc6902';
 import { Widget } from '@/components/ChatWindow';
+import type { Clarification } from '@/lib/agents/search/types';
 
 export type Section = {
   message: Message;
@@ -55,6 +56,7 @@ type ChatContext = {
     message: string,
     messageId?: string,
     rewrite?: boolean,
+    clarification?: Clarification,
   ) => Promise<void>;
   stopGeneration: () => void;
   rewrite: (messageId: string) => void;
@@ -1004,6 +1006,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     message,
     messageId,
     rewrite = false,
+    clarification,
   ) => {
     if (loading || !message) return;
     setLoading(true);
@@ -1070,6 +1073,7 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
           },
           systemInstructions: localStorage.getItem('systemInstructions'),
           projectId: projectId || undefined,
+          ...(clarification ? { clarification } : {}),
         }),
       });
 

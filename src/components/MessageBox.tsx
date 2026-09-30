@@ -26,9 +26,10 @@ import ThinkBox from './ThinkBox';
 import { useChat, Section } from '@/lib/hooks/useChat';
 import Citation from './MessageRenderer/Citation';
 import AssistantSteps from './AssistantSteps';
-import { ResearchBlock } from '@/lib/types';
+import { QuestionsBlock, ResearchBlock } from '@/lib/types';
 import Renderer from './Widgets/Renderer';
 import CodeBlock from './MessageRenderer/CodeBlock';
+import ClarificationPanel from './MessageRenderer/ClarificationPanel';
 
 const ThinkTagProcessor = ({
   children,
@@ -193,6 +194,27 @@ const MessageBox = ({
                   isLast={isLast}
                 />
               </div>
+            ))}
+
+          {section.message.responseBlocks
+            .filter(
+              (block): block is QuestionsBlock => block.type === 'questions',
+            )
+            .map((block) => (
+              <ClarificationPanel
+                key={block.id}
+                questions={block.data.questions}
+                interactive={isLast && !loading}
+                loading={loading}
+                onSubmit={(clarification) =>
+                  sendMessage(
+                    section.message.query,
+                    undefined,
+                    false,
+                    clarification,
+                  )
+                }
+              />
             ))}
 
           {isLast &&
