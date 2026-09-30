@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 import {
   computeNextRunAt,
@@ -426,5 +427,97 @@ describe('type contract', () => {
       projectId: null,
     };
     expect(createJobSchema.safeParse(input).success).toBe(true);
+  });
+});
+
+describe('patch schema reuse (Task 10 PATCH route)', () => {
+  /** The only supported way to derive a patch schema from the create schema. */
+  const patchSchema = z.object(createJobSchema.shape).partial();
+
+  it('builds a patchable schema from the exported shape', () => {
+    // Asserting the real field names (not just "does not throw") so a lost or
+    // emptied `.shape` — e.g. if the export were ever wrapped in a transform
+    // — fails here instead of silently yielding an empty patch schema.
+    const rebuilt = z.object(createJobSchema.shape).partial();
+    expect(Object.keys(rebuilt.shape)).toEqual(
+      expect.arrayContaining([
+        'endType',
+        'intervalMinutes',
+        'maxRuns',
+        'runUntil',
+        'sources',
+      ]),
+    );
+    expect(rebuilt.safeParse({}).success).toBe(true);
+  });
+
+  it('accepts a partial patch that omits maxRuns on a count job', () => {
+    // The end-condition rules are create-time invariants of a whole job, so a
+    // patch that changes one field must not be rejected because another
+    // field is absent from the request body.
+    const result = patchSchema.safeParse({ endType: 'count' });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.endType).toBe('count');
+  });
+
+  it('keeps the per-field rules on a partial patch', () => {
+    expect(patchSchema.safeParse({ prompt: '' }).success).toBe(false);
+    expect(patchSchema.safeParse({ intervalMinutes: 0 }).success).toBe(false);
+    expect(patchSchema.safeParse({ endType: 'weekly' }).success).toBe(false);
+    expect(patchSchema.safeParse({ intervalMinutes: 60 }).success).toBe(true);
+  });
+
+  it('still injects the defaults on a partial patch', () => {
+    // zod keeps `.default()` through `.partial()`, so a PATCH route must merge
+    // only the keys the request actually sent, not the whole parsed object.
+    const result = patchSchema.safeParse({ prompt: 'New prompt' });
+    expect(result.success && result.data.optimizationMode).toBe('balanced');
+  });
+
+  it('documents why .partial() cannot be used directly (it throws at runtime)', () => {
+    // `createJobSchema.partial()` COMPILES — `.superRefine()` returns `this`,
+    // so the method is still on the type — but throws at runtime under zod
+    // 4.3.6. tsc alone cannot catch that, which is why this stays pinned.
+    expect(() => createJobSchema.partial()).toThrow(/refinements/);
+  });
+});
+
+describe('runUntil format contract (Task 11 until-date picker)', () => {
+  const withRunUntil = (runUntil: string) => ({
+    ...minimal,
+    endType: 'date',
+    runUntil,
+  });
+
+  it.each([
+    '2999-02-01T00:00:00.000Z',
+    '2999-02-01T00:00Z',
+    '2999-02-01T00:00:00+02:00',
+    '2999-02-01T00:00:00.123Z',
+  ])('accepts %s (seconds and an explicit zone)', (runUntil) => {
+    expect(createJobSchema.safeParse(withRunUntil(runUntil)).success).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['2999-02-01T00:00', 'what <input type="datetime-local"> hands back'],
+    ['2999-02-01', 'a date-only value'],
+    ['2999-02-01T00:00:00', 'a zone-less value'],
+    ['tomorrow', 'free text'],
+  ])('rejects %s (%s)', (runUntil) => {
+    const result = createJobSchema.safeParse(withRunUntil(runUntil));
+    expect(result.success).toBe(false);
+    expect(pathsOf(result)).toContain('runUntil');
+  });
+
+  it('accepts a datetime-local value once the caller converts it', () => {
+    // The conversion the Task 11 form has to do. `new Date()` reads the
+    // zone-less value in the server's local zone, which is exactly why the
+    // field refuses it and why writers should store the toISOString() form.
+    const converted = new Date('2999-02-01T00:00').toISOString();
+    expect(createJobSchema.safeParse(withRunUntil(converted)).success).toBe(
+      true,
+    );
   });
 });

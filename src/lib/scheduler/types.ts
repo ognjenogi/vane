@@ -92,65 +92,88 @@ const modelRefSchema = z.object({
   key: z.string().min(1, { message: 'Model key is required' }),
 });
 
-export const createJobSchema = z
-  .object({
-    prompt: z.string().min(1, { message: 'Prompt must not be empty' }),
-    title: z.string().optional(),
-    intervalMinutes: z
-      .number()
-      .int('Interval must be a whole number of minutes')
-      .min(1, { message: 'Interval must be at least 1 minute' })
-      .max(525600, { message: 'Interval must be at most 525600 minutes' }),
-    endType: z.enum(['never', 'count', 'date'], {
-      message: 'End type must be one of: never, count, date',
-    }),
-    maxRuns: z
-      .number()
-      .int('Max runs must be a whole number')
-      .min(1, { message: 'Max runs must be at least 1' })
-      .optional(),
-    runUntil: z.iso.datetime({ offset: true }).optional(),
-    optimizationMode: z
-      .enum(['speed', 'balanced', 'quality', 'superfast'], {
-        message:
-          'Optimization mode must be one of: speed, balanced, quality, superfast',
-      })
-      .default('balanced'),
-    sources: z
-      .array(
-        z.enum(['web', 'discussions', 'academic'], {
-          message: 'Sources must be one of: web, discussions, academic',
-        }),
-      )
-      .default(['web']),
-    projectId: z.string().nullable().optional(),
-    chatModel: modelRefSchema.nullable().optional(),
-    embeddingModel: modelRefSchema.nullable().optional(),
-  })
-  .superRefine((input, ctx) => {
-    if (input.endType === 'count' && input.maxRuns === undefined) {
+/**
+ * Field definitions for a job, module-private on purpose. The exported
+ * `createJobSchema` layers the create-time refinements on top, and zod
+ * 4.3.6 refuses to run `.partial()`, `.omit()` and `.pick()` on a schema
+ * that carries a refinement (`util.js`: "cannot be used on object schemas
+ * containing refinements") — even though the method still type-checks, so
+ * tsc will not catch the runtime throw.
+ *
+ * A PATCH route must therefore rebuild the object from the exported shape:
+ *   const patchSchema = z.object(createJobSchema.shape).partial();
+ * That also drops the create-time end-condition rules, which is correct:
+ * `count -> maxRuns` and `date -> runUntil` are invariants of a whole job,
+ * not of one field update.
+ */
+const jobShape = {
+  prompt: z.string().min(1, { message: 'Prompt must not be empty' }),
+  title: z.string().optional(),
+  intervalMinutes: z
+    .number()
+    .int('Interval must be a whole number of minutes')
+    .min(1, { message: 'Interval must be at least 1 minute' })
+    .max(525600, { message: 'Interval must be at most 525600 minutes' }),
+  endType: z.enum(['never', 'count', 'date'], {
+    message: 'End type must be one of: never, count, date',
+  }),
+  maxRuns: z
+    .number()
+    .int('Max runs must be a whole number')
+    .min(1, { message: 'Max runs must be at least 1' })
+    .optional(),
+  /**
+   * Must carry seconds AND an explicit zone: `2026-02-01T00:00:00Z` or
+   * `2026-02-01T00:00:00+02:00` pass, the zone-less form produced by
+   * `<input type="datetime-local">` (`2026-02-01T00:00`) does not, because
+   * `new Date()` would read it in the server's local zone. Callers must
+   * convert, e.g. `new Date(localValue).toISOString()`. The value is
+   * validated but NOT normalized, so writers should store the
+   * `toISOString()` form (all comparisons parse the instant anyway).
+   */
+  runUntil: z.iso.datetime({ offset: true }).optional(),
+  optimizationMode: z
+    .enum(['speed', 'balanced', 'quality', 'superfast'], {
+      message:
+        'Optimization mode must be one of: speed, balanced, quality, superfast',
+    })
+    .default('balanced'),
+  sources: z
+    .array(
+      z.enum(['web', 'discussions', 'academic'], {
+        message: 'Sources must be one of: web, discussions, academic',
+      }),
+    )
+    .default(['web']),
+  projectId: z.string().nullable().optional(),
+  chatModel: modelRefSchema.nullable().optional(),
+  embeddingModel: modelRefSchema.nullable().optional(),
+};
+
+export const createJobSchema = z.object(jobShape).superRefine((input, ctx) => {
+  if (input.endType === 'count' && input.maxRuns === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['maxRuns'],
+      message: 'maxRuns is required when endType is count',
+    });
+  }
+
+  if (input.endType === 'date') {
+    if (input.runUntil === undefined) {
       ctx.addIssue({
         code: 'custom',
-        path: ['maxRuns'],
-        message: 'maxRuns is required when endType is count',
+        path: ['runUntil'],
+        message: 'runUntil is required when endType is date',
+      });
+    } else if (new Date(input.runUntil).getTime() <= Date.now()) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['runUntil'],
+        message: 'runUntil must be in the future',
       });
     }
-
-    if (input.endType === 'date') {
-      if (input.runUntil === undefined) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['runUntil'],
-          message: 'runUntil is required when endType is date',
-        });
-      } else if (new Date(input.runUntil).getTime() <= Date.now()) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['runUntil'],
-          message: 'runUntil must be in the future',
-        });
-      }
-    }
-  });
+  }
+});
 
 export type CreateJobInput = z.infer<typeof createJobSchema>;
