@@ -9,5 +9,12 @@ export const register = async () => {
     }
 
     await import('./lib/config/index');
+
+    // The scheduled-jobs ticker. The flag is read HERE and nowhere else, so an
+    // explicit `startScheduler()` call always starts (see its docstring).
+    if (!process.env.VANE_DISABLE_SCHEDULER) {
+      const { startScheduler } = await import('./lib/scheduler/scheduler');
+      startScheduler();
+    }
   }
 };
