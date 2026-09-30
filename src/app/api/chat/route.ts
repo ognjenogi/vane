@@ -47,6 +47,19 @@ const bodySchema = z.object({
   embeddingModel: embeddingModelSchema,
   systemInstructions: z.string().nullable().optional().default(''),
   projectId: z.string().nullable().optional(),
+  clarification: z
+    .object({
+      skipped: z.boolean(),
+      answers: z
+        .array(
+          z.object({
+            question: z.string(),
+            answer: z.string().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
 });
 
 type Body = z.infer<typeof bodySchema>;
@@ -256,6 +269,7 @@ export const POST = async (req: Request) => {
       followUp: message.content,
       chatId: body.message.chatId,
       messageId: body.message.messageId,
+      clarification: body.clarification,
       config: {
         llm,
         embedding: embedding,

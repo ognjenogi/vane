@@ -1,6 +1,7 @@
 import { ResearcherOutput, SearchAgentInput } from './types';
 import SessionManager from '@/lib/session';
 import { classify } from './classifier';
+import { buildEffectiveQuery, clarify } from './clarifier';
 import Researcher from './researcher';
 import { getWriterPrompt } from '@/lib/prompts/search/writer';
 import { WidgetExecutor } from './widgets';
@@ -54,13 +55,58 @@ class SearchAgent {
     }
 
     try {
+      // In quality mode the turn starts by checking with the user: ask 2-4
+      // clarifying questions and stop here, so research can run against what
+      // they actually wanted. A clarification on the input means the questions
+      // have already been answered, and an empty result (the model saw no
+      // ambiguity, or the clarifier failed) falls straight through, because a
+      // broken clarifier must never strand the user.
+      if (input.config.mode === 'quality' && !input.clarification) {
+        const questions = await clarify({
+          query: input.followUp,
+          chatHistory: input.chatHistory,
+          llm: input.config.llm,
+        });
+
+        if (questions.length > 0) {
+          session.emitBlock({
+            id: crypto.randomUUID(),
+            type: 'questions',
+            data: { questions },
+          });
+          session.emit('end', {});
+
+          await db
+            .update(messages)
+            .set({
+              status: 'completed',
+              responseBlocks: session.getAllBlocks(),
+            })
+            .where(
+              and(
+                eq(messages.chatId, input.chatId),
+                eq(messages.messageId, input.messageId),
+              ),
+            )
+            .execute();
+          return;
+        }
+      }
+
+      // What the rest of the pipeline sees. The stored query above stays the
+      // user's own text: the clarifications are context for the model, not a
+      // rewrite of what was typed.
+      const effectiveQuery = input.clarification
+        ? buildEffectiveQuery(input.followUp, input.clarification)
+        : input.followUp;
+
       let classification;
       try {
         classification = await classify(
           {
             chatHistory: input.chatHistory,
             enabledSources: input.config.sources,
-            query: input.followUp,
+            query: effectiveQuery,
             llm: input.config.llm,
           },
           input.config.mode === 'superfast' ? 2500 : 4000,
@@ -102,7 +148,7 @@ class SearchAgent {
         const widgetPromise = WidgetExecutor.executeAll({
           classification,
           chatHistory: input.chatHistory,
-          followUp: input.followUp,
+          followUp: effectiveQuery,
           llm: input.config.llm,
         })
           .then((widgetOutputs) => {
@@ -131,7 +177,7 @@ class SearchAgent {
           searchPromise = researcher
             .research(session, {
               chatHistory: input.chatHistory,
-              followUp: input.followUp,
+              followUp: effectiveQuery,
               classification: classification,
               config: input.config,
             })
@@ -221,7 +267,7 @@ class SearchAgent {
             ...input.chatHistory,
             {
               role: 'user',
-              content: input.followUp,
+              content: effectiveQuery,
             },
           ],
         });
