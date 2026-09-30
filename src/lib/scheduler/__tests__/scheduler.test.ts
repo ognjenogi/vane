@@ -166,6 +166,38 @@ describe('scheduler ticker', () => {
     expect(doubles.runJobNowCalls).toEqual(['job-1', 'job-1']);
   });
 
+  it('survives a rejected push of an in-flight job and still finishes its run', async () => {
+    const pending = deferred<{ ok: boolean }>();
+    doubles.listJobs.mockResolvedValue([job()]);
+    doubles.runJobNowResult = () => pending.promise;
+
+    await tick();
+    doubles.pushNextRun.mockRejectedValue(new Error('write failed'));
+
+    // The tick must resolve rather than reject: nothing awaits it in
+    // production, where a rejection is node's `unhandledRejection`.
+    await expect(tick()).resolves.toEqual({ ran: [], pushed: ['job-1'] });
+
+    // A push that failed leaves `nextRunAt` in the past, so the NEXT tick tries
+    // again rather than the slot being silently skipped forever.
+    await expect(tick()).resolves.toEqual({ ran: [], pushed: ['job-1'] });
+    expect(doubles.pushNextRun).toHaveBeenCalledTimes(2);
+    expect(consoleError).toHaveBeenCalled();
+    expect(String(consoleError.mock.calls[0][0])).toContain('job-1');
+
+    // And the run that was already in flight is untouched by any of that: it
+    // still reports its own outcome when it lands.
+    pending.resolve({ ok: true });
+    await settle();
+    expect(doubles.recordRunOutcome).toHaveBeenCalledWith('job-1', {
+      ok: true,
+    });
+
+    // With the job dispatchable again, the next tick fires it normally.
+    await expect(tick()).resolves.toEqual({ ran: ['job-1'], pushed: [] });
+    expect(doubles.runJobNowCalls).toEqual(['job-1', 'job-1']);
+  });
+
   it('runs one interval however many times it is started, and stopScheduler clears it', async () => {
     // The whole timer surface this time: the interval has to be fake to count.
     vi.useFakeTimers();
