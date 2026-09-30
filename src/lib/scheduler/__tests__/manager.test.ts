@@ -20,6 +20,10 @@ import {
   isJobDue,
   type CreateJobInput,
 } from '@/lib/scheduler/types';
+import {
+  betterSqliteMockFactory,
+  closeTrackedDatabases,
+} from '@/test/dbTracking';
 
 /**
  * `@/lib/db` opens `<DATA_DIR>/data/db.sqlite` at import time, which would
@@ -29,6 +33,16 @@ import {
  * out and never used.
  */
 vi.mock('@/lib/db', () => ({ default: { __unusedSingleton: true } }));
+
+/**
+ * This file prepares hundreds of statements against the in-memory handle, and
+ * a `Statement` wrapper left as garbage makes its native finalizer run against
+ * a dead environment and abort the worker. The helper keeps every wrapper
+ * reachable and closes the handle it owns; see src/test/dbTracking.ts.
+ */
+vi.mock('better-sqlite3', () =>
+  import('@/test/dbTracking').then((m) => m.betterSqliteMockFactory()),
+);
 
 const MIGRATION = path.join(
   process.cwd(),
@@ -77,33 +91,12 @@ type JobPatch = Parameters<SchedulerManager['updateJob']>[1];
  */
 const CLEAR_RUN_UNTIL = { runUntil: null } as unknown as JobPatch;
 
-/**
- * The in-memory handle, also held at module scope for the life of the worker.
- *
- * better-sqlite3 11.10 on Node 24.21 has a native teardown bug: when a
- * `Database` wrapper is finalized while the isolate is shutting down, its
- * destructor aborts the process (node's `AddEnvironmentCleanupHook` asserting
- * on an already dead environment, reached from V8 weak callbacks). Vitest
- * reports it as "Worker forks emitted error" and loses this file's results. It
- * only ever appears in runs that include this file, so the handle being
- * finalized is this file's.
- *
- * Two things are under this file's control and both are done: one handle for
- * the whole file instead of one per test, and a module-scope reference so the
- * handle is not released along with the last test closure. Neither can fix a
- * bug inside the addon, and the abort stays load-sensitive (0 to 4 occurrences
- * in 20 identical full-suite runs), so read a rare "Worker forks emitted error"
- * as this, not as a real test failure.
- */
-const HANDLES: Database.Database[] = [];
-
 describe('SchedulerManager', () => {
   let sqlite: Database.Database;
   let manager: SchedulerManager;
 
   beforeAll(() => {
     sqlite = new Database(':memory:');
-    HANDLES.push(sqlite);
     // The real migration, so the test tracks the shipped schema.
     sqlite.exec(fs.readFileSync(MIGRATION, 'utf8'));
     sqlite.exec(CHATS_DDL);
@@ -112,7 +105,7 @@ describe('SchedulerManager', () => {
   });
 
   afterAll(() => {
-    sqlite.close();
+    closeTrackedDatabases();
   });
 
   beforeEach(() => {

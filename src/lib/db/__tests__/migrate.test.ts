@@ -5,6 +5,22 @@ import os from 'os';
 import path from 'path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { scheduledJobs } from '@/lib/db/schema';
+import {
+  betterSqliteMockFactory,
+  closeTrackedDatabases,
+} from '@/test/dbTracking';
+
+/**
+ * `@/lib/db/migrate` opens its own `Database` at import time
+ * (src/lib/db/migrate.ts:8) and never closes it, and the migration runner
+ * prepares native `Statement`s the worker can no longer dispose of safely at
+ * shutdown. The real module is wrapped, not replaced, so the migration still
+ * runs against real sqlite and the real `drizzle/*.sql` files; see
+ * src/test/dbTracking.ts.
+ */
+vi.mock('better-sqlite3', () =>
+  import('@/test/dbTracking').then((m) => m.betterSqliteMockFactory()),
+);
 
 const REPO_MIGRATIONS_DIR = path.join(process.cwd(), 'drizzle');
 
@@ -80,7 +96,9 @@ describe('db migrations', () => {
 
   afterAll(() => {
     logSpy.mockRestore();
-    db.close();
+    // Both handles: the one this file opened and the module-private one that
+    // migrate.ts opened at import time, which no test can reach directly.
+    closeTrackedDatabases();
     if (originalDataDir === undefined) {
       delete process.env.DATA_DIR;
     } else {
