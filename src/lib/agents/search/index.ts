@@ -133,7 +133,7 @@ class SearchAgent {
             showStockWidget: false,
             showCalculationWidget: false,
           },
-          standaloneFollowUp: input.followUp,
+          standaloneFollowUp: effectiveQuery,
           degraded: true,
         };
       }

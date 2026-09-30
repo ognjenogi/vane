@@ -121,11 +121,17 @@ const embedding = {
 type Mode = SearchAgentInput['config']['mode'];
 
 describe('SearchAgent quality clarification branch', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
   beforeAll(() => {
+    // The degraded-classifier fallback warns before degrading, which is
+    // expected noise here.
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     db.run(MESSAGES_DDL);
   });
 
   afterAll(() => {
+    warnSpy.mockRestore();
     closeTrackedDatabases();
   });
 
@@ -342,5 +348,46 @@ describe('SearchAgent quality clarification branch', () => {
     const row = await messageRow();
     expect(row.status).toBe('completed');
     expect(row.query).toBe(QUERY);
+  });
+
+  it('carries the woven query through the degraded classifier fallback', async () => {
+    // A non-fatal classify failure degrades to defaults instead of rethrowing.
+    // The researcher prompt renders the follow-up and the standalone
+    // restatement side by side, so the fallback must not contradict the user
+    // line by restating the bare question the clarifications were about.
+    doubles.classify.mockRejectedValue(new Error('connection reset'));
+
+    await searchAsync({
+      mode: 'quality',
+      clarification: {
+        skipped: false,
+        answers: [{ question: 'Which versions?', answer: 'v1 and v2' }],
+      },
+    });
+
+    expect(doubles.clarify).not.toHaveBeenCalled();
+    expect(doubles.Researcher).toHaveBeenCalledTimes(1);
+
+    const expected = `${QUERY}\n\n<user_clarifications>\nQ: Which versions?\nA: v1 and v2\n</user_clarifications>`;
+    const [, researchInput] = doubles.research.mock.calls[0];
+    expect(researchInput.classification.degraded).toBe(true);
+    expect(researchInput.classification.standaloneFollowUp).toBe(expected);
+    expect(researchInput.followUp).toBe(expected);
+  });
+
+  it('does not ask again after the user skipped the questions', async () => {
+    await searchAsync({
+      mode: 'quality',
+      clarification: { skipped: true, answers: [] },
+    });
+
+    // A user who already declined is never asked again, whatever the branch
+    // condition ends up testing.
+    expect(doubles.clarify).not.toHaveBeenCalled();
+    expect(doubles.Researcher).toHaveBeenCalledTimes(1);
+
+    // And research runs on exactly what they typed.
+    expect(doubles.research.mock.calls[0][1].followUp).toBe(QUERY);
+    expect(doubles.classify.mock.calls[0][0].query).toBe(QUERY);
   });
 });
