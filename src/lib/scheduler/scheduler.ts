@@ -158,8 +158,11 @@ export const startScheduler = (): void => {
 
   const interval = setInterval(onTick, TICK_INTERVAL_MS);
   // `unref` so the ticker can never be the reason a short-lived process stays
-  // alive. `next build` runs `register()` in the nodejs runtime too, and has
-  // nothing to tick for.
+  // alive — a build or a script that starts it has nothing to tick for, and
+  // should exit when its own work is done rather than wait out the interval.
+  // This is about process EXIT only: it stops nothing from running, which is
+  // why the boot hook's gate is a separate concern (see
+  // `shouldStartScheduler` in src/instrumentation.ts).
   unref(interval);
 
   scope.__vaneScheduler = interval;
