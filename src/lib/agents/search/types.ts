@@ -21,6 +21,7 @@ export type SearchAgentInput = {
   config: SearchAgentConfig;
   chatId: string;
   messageId: string;
+  clarification?: Clarification;
 };
 
 export type WidgetInput = {
@@ -122,3 +123,22 @@ export interface ResearchAction<
     },
   ) => Promise<ActionOutput>;
 }
+
+/**
+ * One clarifying question and, once the user has replied, its answer.
+ * Plain data only: client components import these types with `import type`.
+ */
+export type ClarificationAnswer = {
+  question: string;
+  answer?: string;
+};
+
+/**
+ * The user's response to the clarifying questions asked before research.
+ * `skipped` means the user declined to answer, in which case the answers are
+ * ignored and research runs on the original query.
+ */
+export type Clarification = {
+  skipped: boolean;
+  answers?: ClarificationAnswer[];
+};

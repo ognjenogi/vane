@@ -120,4 +120,13 @@ export type Block =
   | SourceBlock
   | SuggestionBlock
   | WidgetBlock
+  | QuestionsBlock
   | ResearchBlock;
+
+export type QuestionsBlock = {
+  id: string;
+  type: 'questions';
+  data: {
+    questions: string[];
+  };
+};
