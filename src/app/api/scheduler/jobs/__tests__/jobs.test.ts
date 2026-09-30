@@ -507,6 +507,125 @@ describe('scheduler jobs API', () => {
       expect(response.status).toBe(404);
       expect((await response.json()).message).toBe('Scheduled job not found');
     });
+
+    // A patch is allowed to omit `maxRuns` / `runUntil` — those are invariants
+    // of a whole job, not of one field. What it must NOT be allowed to do is
+    // switch `endType` to one whose companion it cannot supply, because
+    // `evaluateEnd` treats a `count` without `maxRuns` as `never` and the job
+    // then runs forever: a full research turn against a paid provider, every
+    // interval, with a 200 saying the edit went through.
+    describe('end-condition transitions', () => {
+      it('refuses to switch a job to count without a maxRuns to go with it', async () => {
+        const created = await create();
+        expect(created.maxRuns).toBeNull();
+
+        const response = await patch(created.id, { endType: 'count' });
+
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.message).toBe('Invalid request body');
+        expect(body.error).toEqual([
+          {
+            path: 'maxRuns',
+            message: 'maxRuns is required when endType is count',
+          },
+        ]);
+
+        // The row is untouched, not merely rejected at the door.
+        expect(jobRow(created.id)!.endType).toBe('never');
+        expect(jobRow(created.id)!.maxRuns).toBeNull();
+      });
+
+      it('refuses to switch a job to date without a runUntil to go with it', async () => {
+        const created = await create();
+        expect(created.runUntil).toBeNull();
+
+        const response = await patch(created.id, { endType: 'date' });
+
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        expect(body.error).toEqual([
+          {
+            path: 'runUntil',
+            message: 'runUntil is required when endType is date',
+          },
+        ]);
+        expect(jobRow(created.id)!.endType).toBe('never');
+        expect(jobRow(created.id)!.runUntil).toBeNull();
+      });
+
+      it('accepts a switch to count when the body supplies maxRuns', async () => {
+        const created = await create();
+
+        const response = await patch(created.id, {
+          endType: 'count',
+          maxRuns: 5,
+        });
+
+        expect(response.status).toBe(200);
+        expect((await response.json()).job).toMatchObject({
+          endType: 'count',
+          maxRuns: 5,
+        });
+        expect(jobRow(created.id)!.endType).toBe('count');
+        expect(jobRow(created.id)!.maxRuns).toBe(5);
+      });
+
+      it('accepts a switch to count when the job already holds a maxRuns', async () => {
+        // The companion can come from the stored row: `never` -> `count` on a
+        // job that was created with a maxRuns and never switched to count yet.
+        const created = await create({ maxRuns: 3 });
+
+        const response = await patch(created.id, { endType: 'count' });
+
+        expect(response.status).toBe(200);
+        expect((await response.json()).job).toMatchObject({
+          endType: 'count',
+          maxRuns: 3,
+        });
+        expect(jobRow(created.id)!.endType).toBe('count');
+        expect(jobRow(created.id)!.maxRuns).toBe(3);
+      });
+
+      it('accepts a switch to date when the body supplies runUntil', async () => {
+        const created = await create();
+
+        const response = await patch(created.id, {
+          endType: 'date',
+          runUntil: '2999-06-01T12:00:00+02:00',
+        });
+
+        expect(response.status).toBe(200);
+        expect((await response.json()).job).toMatchObject({
+          endType: 'date',
+          runUntil: '2999-06-01T10:00:00.000Z',
+        });
+        expect(jobRow(created.id)!.runUntil).toBe('2999-06-01T10:00:00.000Z');
+      });
+
+      it('leaves the end condition alone for a patch that does not touch it', async () => {
+        // The other half of the rule: a patch that never mentions `endType` is
+        // not judged against a whole-job invariant, so a malformed end
+        // condition inherited from elsewhere cannot make every edit a 400.
+        const created = await create({ title: 'Original' });
+
+        const response = await patch(created.id, { title: 'Renamed' });
+
+        expect(response.status).toBe(200);
+        expect(jobRow(created.id)!.title).toBe('Renamed');
+        expect(jobRow(created.id)!.endType).toBe('never');
+      });
+
+      it('answers 404 for an unknown id, since there is no stored end condition to judge against', async () => {
+        // The end-condition check reads the stored job, so an id that resolves to
+        // nothing cannot be validated and falls through to 404 — the same answer
+        // an otherwise-valid patch for that id gets.
+        const response = await patch('nope', { endType: 'count' });
+
+        expect(response.status).toBe(404);
+        expect((await response.json()).message).toBe('Scheduled job not found');
+      });
+    });
   });
 
   describe('DELETE /api/scheduler/jobs/[id]', () => {
