@@ -16,6 +16,11 @@ import { shouldStartScheduler } from '@/instrumentation';
  * so these tests pin the DECISION, which is the part this repo owns, and not a
  * claim about which Next version is installed.
  *
+ * The opt-out itself is read by PRESENCE, not by value: setting
+ * `VANE_DISABLE_SCHEDULER` at all disables the ticker, whatever it is set to,
+ * including the empty string. `skips when the opt-out is set to ANY value…`
+ * below pins that; do not read it as "set to a non-empty value".
+ *
  * The predicate takes the environment as an argument instead of reading
  * `process.env`, because the global test setup pins `VANE_DISABLE_SCHEDULER` to
  * `'1'` and the build case is therefore unreachable from a test otherwise.
@@ -25,8 +30,21 @@ describe('shouldStartScheduler', () => {
     expect(shouldStartScheduler({})).toBe(true);
   });
 
-  it('skips when the operator opted out', () => {
-    expect(shouldStartScheduler({ VANE_DISABLE_SCHEDULER: '1' })).toBe(false);
+  it('skips when the opt-out is set to ANY value, including a degenerate one', () => {
+    // Fail CLOSED. The flag is read by PRESENCE, not by value, because the two
+    // ways to be wrong are not symmetric: an unrecognised spelling would leave
+    // the ticker running and firing paid research turns on a box whose operator
+    // believes they turned it off, while a recognised one costs a single MISSED
+    // scheduled run — silent, but free.
+    //
+    // So `VANE_DISABLE_SCHEDULER=` (a bare `=` in a compose file or a
+    // Dockerfile) and the other spellings people reach for when they think they
+    // are being clever all read as OFF. The value is never interpreted.
+    for (const value of ['1', '0', 'false', 'true', '', 'no', ' ']) {
+      expect(shouldStartScheduler({ VANE_DISABLE_SCHEDULER: value })).toBe(
+        false,
+      );
+    }
   });
 
   it('skips during a production build', () => {
@@ -35,30 +53,14 @@ describe('shouldStartScheduler', () => {
     expect(shouldStartScheduler({ NEXT_PHASE: 'phase-production-build' })).toBe(
       false,
     );
-  });
-
-  it('treats a PRESENT-BUT-EMPTY opt-out as not set', () => {
-    // `VANE_DISABLE_SCHEDULER=` in a compose file or a Dockerfile sets the
-    // variable to the empty string, and `!''` is `true` — so a bare `=` leaves
-    // the ticker RUNNING. That is the wrong way round for a safety flag, and it
-    // is pinned here deliberately: the behaviour is real, and the test file is
-    // where a reader who assumes otherwise is most likely to be.
-    //
-    // Fixing it means reading presence (`in`) rather than the value, which is a
-    // behaviour change to the gate and therefore out of scope for a comment-only
-    // round. It is the one thing in this file I would change next.
-    expect(shouldStartScheduler({ VANE_DISABLE_SCHEDULER: '' })).toBe(true);
-    // The build phase is still independent of the value, so a build is skipped
-    // either way.
+    // Two independent reasons: a build is skipped with the variable absent, and
+    // a degenerate value does not weaken the build check either.
     expect(
       shouldStartScheduler({
-        VANE_DISABLE_SCHEDULER: '',
         NEXT_PHASE: 'phase-production-build',
+        VANE_DISABLE_SCHEDULER: '',
       }),
     ).toBe(false);
-  });
-
-  it('skips when both reasons apply at once', () => {
     expect(
       shouldStartScheduler({
         NEXT_PHASE: 'phase-production-build',

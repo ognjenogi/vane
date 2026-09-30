@@ -40,9 +40,22 @@ type SchedulerBootEnv = {
  * or a test run, which is where the ticker belongs. `NEXT_PHASE` is assigned in
  * exactly one place in Next (`dist/build/index.js`), so `next start` never sees
  * it and this gate cannot disable the ticker in production.
+ *
+ * `VANE_DISABLE_SCHEDULER` is read by PRESENCE, not by value: setting the
+ * variable AT ALL disables the ticker — empty, `0`, `false` and `1` all mean
+ * off. Do not document it as needing a non-empty value; it does not.
+ *
+ * That asymmetry is the point. The two ways to be wrong are not symmetric: a
+ * spelling this predicate fails to recognise leaves a ticker RUNNING, holding
+ * the database and firing real paid research turns on a box whose operator
+ * believes they turned it off. Every spelling it recognises instead costs one
+ * MISSED scheduled run — silent, but visible in the log, and free. For a flag
+ * that spends money, failing closed is the correct direction, so the degenerate
+ * spellings resolve to "disabled".
  */
 export const shouldStartScheduler = (env: SchedulerBootEnv): boolean =>
-  !env.VANE_DISABLE_SCHEDULER && env.NEXT_PHASE !== 'phase-production-build';
+  !('VANE_DISABLE_SCHEDULER' in env) &&
+  env.NEXT_PHASE !== 'phase-production-build';
 
 export const register = async () => {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
