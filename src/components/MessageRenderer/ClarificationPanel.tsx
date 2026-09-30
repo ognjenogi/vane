@@ -3,7 +3,48 @@
 import { useId, useState } from 'react';
 import { MessageCircleQuestion, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { Clarification } from '@/lib/agents/search/types';
+import type {
+  Clarification,
+  ClarificationAnswer,
+} from '@/lib/agents/search/types';
+
+/**
+ * The answers the user actually gave, in order, with blank ones dropped.
+ * Shared so the payload and the rendered message can never disagree about
+ * what counts as answered.
+ */
+const answered = (entries: ClarificationAnswer[]): ClarificationAnswer[] =>
+  entries.flatMap((entry) => {
+    const answer = (entry.answer ?? '').trim();
+    return answer ? [{ question: entry.question, answer }] : [];
+  });
+
+/**
+ * The text of the user's turn once the questions are answered.
+ *
+ * `sendMessage` renders whatever it is handed as the user's message, so the
+ * answers have to be part of the content and not just the `clarification`
+ * payload: otherwise the transcript repeats the original query and hides what
+ * the user actually typed. The `Q:`/`A:` lines are the convention
+ * `buildEffectiveQuery` already uses server-side, and they still read when the
+ * newlines collapse, because the user message is rendered as plain text.
+ *
+ * Blank answers and a skipped clarification leave the query untouched.
+ */
+export const buildClarifiedMessage = (
+  query: string,
+  clarification: Clarification,
+): string => {
+  if (clarification.skipped) {
+    return query;
+  }
+
+  const qa = answered(clarification.answers ?? []).map(
+    ({ question, answer }) => `Q: ${question}\nA: ${answer}`,
+  );
+
+  return qa.length === 0 ? query : `${query}\n\n${qa.join('\n\n')}`;
+};
 
 /**
  * The clarifying questions the search agent asks before research starts, plus
@@ -36,12 +77,15 @@ const ClarificationPanel = ({
   const submitAnswers = () => {
     // Blank answers are dropped rather than sent as empty strings, so the
     // server sees exactly the questions the user actually answered.
-    const answered = questions.flatMap((question, index) => {
-      const answer = (answers[index] ?? '').trim();
-      return answer ? [{ question, answer }] : [];
+    onSubmit({
+      skipped: false,
+      answers: answered(
+        questions.map((question, index) => ({
+          question,
+          answer: answers[index] ?? '',
+        })),
+      ),
     });
-
-    onSubmit({ skipped: false, answers: answered });
   };
 
   return (
@@ -93,6 +137,7 @@ const ClarificationPanel = ({
 
       <div className="mt-3 flex flex-row items-center space-x-2">
         <button
+          type="button"
           onClick={submitAnswers}
           disabled={disabled}
           className="flex flex-row items-center space-x-1.5 rounded-full bg-sky-400 px-3 py-1.5 text-sm text-white transition duration-200 hover:bg-sky-500 disabled:opacity-50 disabled:hover:bg-sky-400"
@@ -101,6 +146,7 @@ const ClarificationPanel = ({
           <span>Answer &amp; research</span>
         </button>
         <button
+          type="button"
           onClick={() => onSubmit({ skipped: true })}
           disabled={disabled}
           className="flex flex-row items-center rounded-full px-3 py-1.5 text-sm text-black/70 dark:text-white/70 hover:bg-light-200 dark:hover:bg-dark-200 transition duration-200 disabled:opacity-50"

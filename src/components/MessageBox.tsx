@@ -29,7 +29,9 @@ import AssistantSteps from './AssistantSteps';
 import { QuestionsBlock, ResearchBlock } from '@/lib/types';
 import Renderer from './Widgets/Renderer';
 import CodeBlock from './MessageRenderer/CodeBlock';
-import ClarificationPanel from './MessageRenderer/ClarificationPanel';
+import ClarificationPanel, {
+  buildClarifiedMessage,
+} from './MessageRenderer/ClarificationPanel';
 
 const ThinkTagProcessor = ({
   children,
@@ -207,8 +209,9 @@ const MessageBox = ({
                 interactive={isLast && !loading}
                 loading={loading}
                 onSubmit={(clarification) =>
+                  // Content carries the answers, so the turn shows them.
                   sendMessage(
-                    section.message.query,
+                    buildClarifiedMessage(section.message.query, clarification),
                     undefined,
                     false,
                     clarification,

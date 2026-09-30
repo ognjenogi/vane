@@ -2,7 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import ClarificationPanel from '../ClarificationPanel';
+import ClarificationPanel, {
+  buildClarifiedMessage,
+} from '../ClarificationPanel';
 
 const QUESTIONS = [
   'Which release are you interested in?',
@@ -37,6 +39,9 @@ describe('ClarificationPanel', () => {
     }
     expect(submitButton()).toBeEnabled();
     expect(skipButton()).toBeEnabled();
+    // Neither button may fall back to type="submit" and reload the page.
+    expect(submitButton()).toHaveAttribute('type', 'button');
+    expect(skipButton()).toHaveAttribute('type', 'button');
   });
 
   it('submits every answered question', () => {
@@ -154,5 +159,93 @@ describe('ClarificationPanel', () => {
     }
     expect(submitButton()).toBeDisabled();
     expect(skipButton()).toBeDisabled();
+  });
+
+  it('is read-only while a stream is in flight', () => {
+    const onSubmit = vi.fn();
+    render(
+      <ClarificationPanel
+        questions={QUESTIONS}
+        interactive={true}
+        loading={true}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    for (const question of QUESTIONS) {
+      expect(screen.getByLabelText(question)).toBeDisabled();
+    }
+    expect(submitButton()).toBeDisabled();
+    expect(skipButton()).toBeDisabled();
+
+    fireEvent.click(submitButton());
+    fireEvent.click(skipButton());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The outgoing message content is what the user's turn renders as, so the
+ * answers they typed have to be part of it and not just the payload.
+ */
+describe('buildClarifiedMessage', () => {
+  const QUERY = 'compare the v1 and v2 release notes';
+
+  it('appends every answered pair to the query', () => {
+    expect(
+      buildClarifiedMessage(QUERY, {
+        skipped: false,
+        answers: [
+          { question: QUESTIONS[0], answer: 'v2.1.0' },
+          { question: QUESTIONS[1], answer: 'the upgrade guide' },
+        ],
+      }),
+    ).toBe(
+      [
+        QUERY,
+        '',
+        `Q: ${QUESTIONS[0]}`,
+        'A: v2.1.0',
+        '',
+        `Q: ${QUESTIONS[1]}`,
+        'A: the upgrade guide',
+      ].join('\n'),
+    );
+  });
+
+  it('omits blank answers and trims the rest', () => {
+    expect(
+      buildClarifiedMessage(QUERY, {
+        skipped: false,
+        answers: [
+          { question: QUESTIONS[0], answer: '   ' },
+          { question: QUESTIONS[1], answer: '  the upgrade guide  ' },
+        ],
+      }),
+    ).toBe(
+      [QUERY, '', `Q: ${QUESTIONS[1]}`, 'A: the upgrade guide'].join('\n'),
+    );
+  });
+
+  it('leaves the query alone when nothing was answered', () => {
+    expect(buildClarifiedMessage(QUERY, { skipped: false, answers: [] })).toBe(
+      QUERY,
+    );
+
+    expect(
+      buildClarifiedMessage(QUERY, {
+        skipped: false,
+        answers: [{ question: QUESTIONS[0], answer: '  ' }],
+      }),
+    ).toBe(QUERY);
+  });
+
+  it('leaves the query alone when the questions were skipped', () => {
+    expect(
+      buildClarifiedMessage(QUERY, {
+        skipped: true,
+        answers: [{ question: QUESTIONS[0], answer: 'v2.1.0' }],
+      }),
+    ).toBe(QUERY);
   });
 });
