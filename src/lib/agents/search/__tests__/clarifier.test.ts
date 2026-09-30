@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import BaseLLM from '@/lib/models/base/llm';
 import { clarifierPrompt } from '@/lib/prompts/search/clarifier';
 import { ChatTurnMessage } from '@/lib/types';
@@ -39,6 +47,12 @@ let warnSpy: ReturnType<typeof vi.spyOn>;
 
 beforeAll(() => {
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+// Cleared per test so a `toHaveBeenCalledWith` assertion can only be satisfied
+// by the call that test itself provoked.
+beforeEach(() => {
+  warnSpy.mockClear();
 });
 
 afterAll(() => {
@@ -101,6 +115,22 @@ describe('clarify', () => {
 
   it('returns [] instead of hanging when the LLM never settles', async () => {
     await expect(call(llmHanging())).resolves.toEqual([]);
+  });
+
+  it('drops non-string and blank questions instead of passing them on', async () => {
+    // A provider returns unvalidated parsed JSON on a schema failure, and
+    // Task 7 renders these — an object child would crash React.
+    const llm = llmResolving({
+      questions: ['Which versions?', 1, { text: 'Which versions?' }, '   ', ''],
+    });
+
+    await expect(call(llm)).resolves.toEqual(['Which versions?']);
+  });
+
+  it('returns [] when every question is unusable', async () => {
+    const llm = llmResolving({ questions: [null, 3, { text: 'x' }, ' '] });
+
+    await expect(call(llm)).resolves.toEqual([]);
   });
 
   it.each([

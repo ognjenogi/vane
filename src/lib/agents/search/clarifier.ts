@@ -60,12 +60,16 @@ export const clarify = async (
     ]);
 
     // Providers hand back the parsed JSON unvalidated when it fails the schema,
-    // so `questions` can genuinely be missing or the wrong shape here.
+    // so `questions` can genuinely be missing or hold something other than
+    // strings. These end up in a QuestionsBlock and get rendered, so anything
+    // that is not a real question is dropped rather than passed on.
     if (!Array.isArray(output?.questions)) {
       return [];
     }
 
-    return output.questions;
+    return output.questions.filter(
+      (question) => typeof question === 'string' && question.trim().length > 0,
+    );
   } catch (err: any) {
     console.warn(
       'Clarification failed, continuing without questions:',
