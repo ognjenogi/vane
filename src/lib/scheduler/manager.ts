@@ -128,8 +128,13 @@ class SchedulerManager {
     for (const [key, value] of Object.entries(patch)) {
       if (value === undefined) continue;
 
+      // `createJobSchema` validates `runUntil` but does not normalize it, so
+      // store the canonical UTC form. An explicit `null` clears the end date
+      // and must be written as SQL NULL, not coerced to the epoch.
       updates[key] =
-        key === 'runUntil' ? new Date(value as string).toISOString() : value;
+        key === 'runUntil' && value != null
+          ? new Date(value as string).toISOString()
+          : value;
     }
 
     // Resuming must not fire the slot the job missed while it was paused.
@@ -166,6 +171,12 @@ class SchedulerManager {
    * Bookkeeping for a finished run: count it, remember when it ran and why it
    * failed, and move the schedule on. `count` and `date` jobs evaluate to
    * `completed` here, on the run that reaches their end condition.
+   *
+   * A run can outlive the pause the user requested while it was in flight, so
+   * `evaluateEnd` alone is not allowed to decide the status: it answers "is
+   * this job finished?", not "should it run again?". Completion is terminal and
+   * wins; otherwise a job that was paused stays paused instead of silently
+   * resuming.
    */
   async recordRunOutcome(
     id: string,
@@ -179,6 +190,7 @@ class SchedulerManager {
     // The run that just finished is part of the count, so the end condition is
     // evaluated against the incremented runCount.
     const finished: ScheduledJob = { ...job, runCount: job.runCount + 1 };
+    const status = evaluateEnd(finished, nextRunAt);
 
     await this.db
       .update(scheduledJobs)
@@ -187,7 +199,12 @@ class SchedulerManager {
         lastRunAt: now.toISOString(),
         nextRunAt,
         lastError: result.ok ? null : (result.error ?? null),
-        status: evaluateEnd(finished, nextRunAt),
+        status:
+          status === 'completed'
+            ? 'completed'
+            : job.status === 'paused'
+              ? 'paused'
+              : 'active',
         updatedAt: now.toISOString(),
       })
       .where(eq(scheduledJobs.id, id))

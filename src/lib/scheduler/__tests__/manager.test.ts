@@ -2,7 +2,16 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import * as schema from '@/lib/db/schema';
 import SchedulerManager from '@/lib/scheduler/manager';
 import {
@@ -58,17 +67,43 @@ const minimal = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+/** The declared `updateJob` patch type, read off the method itself. */
+type JobPatch = Parameters<SchedulerManager['updateJob']>[1];
+
+/**
+ * `runUntil: null` is outside the declared patch type (the schema rejects it),
+ * but a JSON request body can still carry it, and clearing the end date has to
+ * clear it rather than store the epoch.
+ */
+const CLEAR_RUN_UNTIL = { runUntil: null } as unknown as JobPatch;
+
+/**
+ * The in-memory handle, also held at module scope for the life of the worker.
+ *
+ * better-sqlite3 11.10 on Node 24.21 has a native teardown bug: when a
+ * `Database` wrapper is finalized while the isolate is shutting down, its
+ * destructor aborts the process (node's `AddEnvironmentCleanupHook` asserting
+ * on an already dead environment, reached from V8 weak callbacks). Vitest
+ * reports it as "Worker forks emitted error" and loses this file's results. It
+ * only ever appears in runs that include this file, so the handle being
+ * finalized is this file's.
+ *
+ * Two things are under this file's control and both are done: one handle for
+ * the whole file instead of one per test, and a module-scope reference so the
+ * handle is not released along with the last test closure. Neither can fix a
+ * bug inside the addon, and the abort stays load-sensitive (0 to 4 occurrences
+ * in 20 identical full-suite runs), so read a rare "Worker forks emitted error"
+ * as this, not as a real test failure.
+ */
+const HANDLES: Database.Database[] = [];
+
 describe('SchedulerManager', () => {
   let sqlite: Database.Database;
   let manager: SchedulerManager;
 
-  beforeEach(() => {
-    // Only `Date` is faked: the drizzle driver is synchronous, so faking the
-    // timer functions would buy nothing and could starve awaited promises.
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(T0);
-
+  beforeAll(() => {
     sqlite = new Database(':memory:');
+    HANDLES.push(sqlite);
     // The real migration, so the test tracks the shipped schema.
     sqlite.exec(fs.readFileSync(MIGRATION, 'utf8'));
     sqlite.exec(CHATS_DDL);
@@ -76,9 +111,23 @@ describe('SchedulerManager', () => {
     manager = new SchedulerManager(drizzle(sqlite, { schema }));
   });
 
+  afterAll(() => {
+    sqlite.close();
+  });
+
+  beforeEach(() => {
+    // Only `Date` is faked: the drizzle driver is synchronous, so faking the
+    // timer functions would buy nothing and could starve awaited promises.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+
+    // Every test starts from an empty database, so the two tables are all this
+    // file has to reset.
+    sqlite.exec('DELETE FROM scheduled_jobs; DELETE FROM chats;');
+  });
+
   afterEach(() => {
     vi.useRealTimers();
-    sqlite.close();
   });
 
   const jobRow = (id: string) =>
@@ -294,6 +343,24 @@ describe('SchedulerManager', () => {
       expect(jobRow(job.id)!.projectId).toBeNull();
     });
 
+    it('clears runUntil on an explicit null and still normalizes a real string', async () => {
+      const job = await manager.createJob(
+        parse(minimal({ endType: 'date', runUntil: at(60).toISOString() })),
+      );
+      expect(job.runUntil).toBe(at(60).toISOString());
+
+      const cleared = await manager.updateJob(job.id, CLEAR_RUN_UNTIL);
+
+      expect(cleared!.runUntil).toBeNull();
+      expect(jobRow(job.id)!.runUntil).toBeNull();
+
+      const restored = await manager.updateJob(job.id, {
+        runUntil: '2030-06-01T12:00:00+02:00',
+      });
+      expect(restored!.runUntil).toBe('2030-06-01T10:00:00.000Z');
+      expect(jobRow(job.id)!.runUntil).toBe('2030-06-01T10:00:00.000Z');
+    });
+
     it('pauses without rescheduling and makes the job not due', async () => {
       const job = await manager.createJob(parse(minimal()));
       vi.setSystemTime(at(180));
@@ -429,6 +496,70 @@ describe('SchedulerManager', () => {
 
       expect(after!.status).toBe('active');
       expect(after!.endType).toBe('never');
+    });
+
+    it('keeps a job paused when its run finishes after the pause', async () => {
+      const job = await manager.createJob(parse(minimal()));
+      await manager.updateJob(job.id, { status: 'paused' });
+
+      // The user paused while the run was in flight.
+      vi.setSystemTime(at(5));
+      const after = await manager.recordRunOutcome(job.id, { ok: true });
+
+      // The run is still counted and scheduled, but the pause stands: the job
+      // must not start firing again on its own.
+      expect(after!.status).toBe('paused');
+      expect(after!.runCount).toBe(1);
+      expect(after!.lastRunAt).toBe(at(5).toISOString());
+      expect(after!.nextRunAt).toBe(computeNextRunAt(at(5), 60));
+      expect(isJobDue(after!, new Date())).toBe(false);
+      expect(jobRow(job.id)!.status).toBe('paused');
+
+      // Resuming stays an explicit act.
+      expect(
+        (await manager.updateJob(job.id, { status: 'active' }))!.status,
+      ).toBe('active');
+    });
+
+    it('keeps a paused job paused even when the run failed', async () => {
+      const job = await manager.createJob(parse(minimal()));
+      await manager.updateJob(job.id, { status: 'paused' });
+
+      vi.setSystemTime(at(5));
+      const after = await manager.recordRunOutcome(job.id, {
+        ok: false,
+        error: 'provider timed out',
+      });
+
+      expect(after!.status).toBe('paused');
+      expect(after!.lastError).toBe('provider timed out');
+    });
+
+    it('completes a paused job that reached its count end', async () => {
+      const job = await manager.createJob(
+        parse(minimal({ endType: 'count', maxRuns: 1 })),
+      );
+      await manager.updateJob(job.id, { status: 'paused' });
+
+      vi.setSystemTime(at(5));
+      const after = await manager.recordRunOutcome(job.id, { ok: true });
+
+      // Completion is terminal, so it wins over the pause.
+      expect(after!.status).toBe('completed');
+      expect(after!.runCount).toBe(1);
+    });
+
+    it('completes a paused date job once its next slot passes runUntil', async () => {
+      const job = await manager.createJob(
+        parse(minimal({ endType: 'date', runUntil: at(59.99).toISOString() })),
+      );
+      await manager.updateJob(job.id, { status: 'paused' });
+
+      vi.setSystemTime(at(5));
+      const after = await manager.recordRunOutcome(job.id, { ok: true });
+
+      expect(after!.nextRunAt).toBe(at(65).toISOString());
+      expect(after!.status).toBe('completed');
     });
 
     it('completes a date job only once the next slot is past runUntil', async () => {
