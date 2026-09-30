@@ -16,7 +16,10 @@ import type { ModelRef, ScheduledJob } from './types';
 /** Which list on a configured provider serves one of the two model roles. */
 type ModelRole = 'chatModels' | 'embeddingModels';
 
-/** What a run reports back to the ticker; see `recordRunOutcome`. */
+/**
+ * What one run reports to whoever fired it: whether the turn happened, and why
+ * not if it did not. What to record or schedule off that is the caller's call.
+ */
 export type JobRunResult = { ok: boolean; error?: string };
 
 const configuredProviders = (): ConfigModelProvider[] =>
@@ -80,15 +83,19 @@ export const resolveJobModels = (
   ),
 });
 
-const MODES = [
-  'speed',
-  'superfast',
-  'balanced',
-  'quality',
-] as const satisfies readonly SearchAgentConfig['mode'][];
-
-const isMode = (mode: string): mode is SearchAgentConfig['mode'] =>
-  (MODES as readonly string[]).includes(mode);
+/**
+ * Every mode `SearchAgentConfig` accepts, as a map KEYED BY THE UNION rather
+ * than a list checked against it. `satisfies` would only have caught a mode
+ * being removed; keying it by the type makes an ADDED mode a compile error too
+ * (a missing key), so neither direction can slip through to silently run as
+ * the default.
+ */
+const MODES: Record<SearchAgentConfig['mode'], true> = {
+  speed: true,
+  superfast: true,
+  balanced: true,
+  quality: true,
+};
 
 /**
  * `scheduled_jobs.optimizationMode` is plain TEXT rather than an enum, so a row
@@ -98,7 +105,10 @@ const isMode = (mode: string): mode is SearchAgentConfig['mode'] =>
  * run over a typo.
  */
 const toMode = (mode: string): SearchAgentConfig['mode'] =>
-  isMode(mode) ? mode : 'balanced';
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so a stored
+  // value of `toString` or `constructor` would pass and then be handed to the
+  // agent as a mode.
+  Object.hasOwn(MODES, mode) ? (mode as SearchAgentConfig['mode']) : 'balanced';
 
 const loadProject = async (projectId: string) =>
   db.query.projects.findFirst({ where: eq(projects.id, projectId) });
@@ -122,13 +132,16 @@ const describeError = (err: unknown): string => {
 /**
  * Runs one scheduled job headlessly: the same `SearchAgent` turn the chat route
  * starts, minus the HTTP and minus anyone reading the stream. The agent writes
- * the user message and its own answer to the job's chat, and its 30 minute
- * session TTL cleans the session up afterwards.
+ * the user message and its own answer to the job's chat, and the session it was
+ * handed is reclaimed by `SessionManager`'s 30 minute TTL.
  *
- * Never rejects. The ticker fires this in the background where an unhandled
- * rejection would take the process down, so every failure — a model that cannot
- * be resolved, a provider that refuses the key, an agent that throws before it
- * catches anything itself — comes back as `{ ok: false, error }`.
+ * This is the contract, and it is what the background caller relies on: this
+ * function NEVER rejects, and it never leaves a rejection unhandled. A job
+ * scheduled to fire on a timer runs with nothing awaiting it, where an unhandled
+ * rejection would take the whole process down rather than fail one job. So every
+ * failure — a model that cannot be resolved, a provider that refuses the key, an
+ * agent that throws before it catches anything itself — comes back as
+ * `{ ok: false, error }`.
  */
 export const runJobNow = async (job: ScheduledJob): Promise<JobRunResult> => {
   try {
@@ -137,17 +150,34 @@ export const runJobNow = async (job: ScheduledJob): Promise<JobRunResult> => {
     // A registry per run, as the chat route builds one per request: providers
     // can be added or removed between two ticks.
     const registry = new ModelRegistry();
+    // Both loads in flight at once, but each wrapped: `Promise.all` attaches its
+    // handlers only after it has evaluated BOTH array elements, so a synchronous
+    // throw from the second call would strand the first call's already rejected
+    // promise with no handler — node's `unhandledRejection`, which for a
+    // scheduler means the server process dies. An async wrapper turns such a
+    // throw into a rejection before `Promise.all` ever sees it. Today both
+    // registry methods are `async`, which hides this; the wrapping is what makes
+    // it safe rather than lucky.
     const [llm, embedding] = await Promise.all([
-      registry.loadChatModel(chatModel.providerId, chatModel.key),
-      registry.loadEmbeddingModel(
-        embeddingModel.providerId,
-        embeddingModel.key,
-      ),
+      (async () =>
+        registry.loadChatModel(chatModel.providerId, chatModel.key))(),
+      (async () =>
+        registry.loadEmbeddingModel(
+          embeddingModel.providerId,
+          embeddingModel.key,
+        ))(),
     ]);
 
-    // Mirrors the project merge in `src/app/api/chat/route.ts`. The scheduled
-    // prompt is the only user text there is, so the project's instructions (or
-    // the literal 'None') are the whole system prompt.
+    // The project merge from `src/app/api/chat/route.ts`, with ONE deliberate
+    // difference: that route falls back to the CHAT row's `projectId` when the
+    // request carries none, and this does not. `job.projectId` is the only
+    // reference consulted, because the job row is what the user configured — a
+    // job whose project was reassigned must follow the job, not the chat
+    // `createJob` made for it. The cost of dropping the fallback is real and
+    // silent: a chat still pointing at a project the job does not would lose
+    // that project's instructions and files and still report `ok: true`. The
+    // scheduled prompt is the only user text there is, so whatever this resolves
+    // to is the whole system prompt.
     const project = job.projectId ? await loadProject(job.projectId) : null;
     const systemInstructions = project?.systemInstructions?.trim() || 'None';
     const fileIds = (project?.files ?? [])
@@ -178,9 +208,10 @@ export const runJobNow = async (job: ScheduledJob): Promise<JobRunResult> => {
     };
 
     // `searchAsync` catches its own failures and persists a `status: 'error'`
-    // turn, so a resolved promise means the turn is recorded, not that the
-    // answer is good. The ticker counts and schedules off this result either
-    // way.
+    // turn, so `ok: true` here means the turn is recorded, not that the answer
+    // is good. Deciding what to do with that — counting the run, rescheduling,
+    // retrying — belongs to the caller that fires this, not to this function.
+    // The session nobody read is reclaimed by `SessionManager`'s 30 minute TTL.
     await new SearchAgent().searchAsync(SessionManager.createSession(), input);
 
     return { ok: true };

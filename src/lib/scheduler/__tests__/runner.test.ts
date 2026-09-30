@@ -28,6 +28,15 @@ const doubles = vi.hoisted(() => ({
   searchAsync: vi.fn(),
   loadChatModel: vi.fn(),
   loadEmbeddingModel: vi.fn(),
+  /**
+   * The values the registry hands back, as PLAIN functions rather than spies:
+   * vitest attaches a rejection handler to any promise a spy returns, which
+   * would hide the very unhandled rejection
+   * `leaves no rejection unhandled when a sibling load throws synchronously`
+   * is about. The spies above still record the calls.
+   */
+  chatModelResult: (() => Promise.resolve(undefined)) as () => unknown,
+  embeddingModelResult: (() => Promise.resolve(undefined)) as () => unknown,
   getCurrentConfig: vi.fn(),
   /**
    * `@/lib/db` opens `<DATA_DIR>/data/db.sqlite` at import time, and the runner
@@ -46,12 +55,19 @@ vi.mock('@/lib/agents/search', () => ({
 
 /**
  * The registry only hands back model handles here; no provider is ever
- * constructed, so no key or endpoint is needed.
+ * constructed, so no key or endpoint is needed. A test can also make either
+ * method throw synchronously, or return an already rejected promise.
  */
 vi.mock('@/lib/models/registry', () => ({
   default: class ModelRegistry {
-    loadChatModel = doubles.loadChatModel;
-    loadEmbeddingModel = doubles.loadEmbeddingModel;
+    loadChatModel = (...args: unknown[]) => {
+      doubles.loadChatModel(...args);
+      return doubles.chatModelResult();
+    };
+    loadEmbeddingModel = (...args: unknown[]) => {
+      doubles.loadEmbeddingModel(...args);
+      return doubles.embeddingModelResult();
+    };
   },
 }));
 
@@ -167,8 +183,8 @@ describe('scheduler runner', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.clearAllMocks();
 
-    doubles.loadChatModel.mockResolvedValue(LLM);
-    doubles.loadEmbeddingModel.mockResolvedValue(EMBEDDING);
+    doubles.chatModelResult = () => Promise.resolve(LLM);
+    doubles.embeddingModelResult = () => Promise.resolve(EMBEDDING);
     doubles.searchAsync.mockResolvedValue(undefined);
     doubles.getCurrentConfig.mockReturnValue({
       modelProviders: [ANTHROPIC, OPENAI],
@@ -181,17 +197,26 @@ describe('scheduler runner', () => {
     vi.useRealTimers();
   });
 
-  const insertProject = (row: Record<string, unknown>) =>
+  /**
+   * Writes a `projects` row the way the table allows: `systemInstructions` and
+   * `files` both have DEFAULTs but no NOT NULL, so `null` here stands for a
+   * legacy row written before those columns were populated.
+   */
+  const insertProject = (row: {
+    id: string;
+    systemInstructions?: string | null;
+    files?: unknown[] | null;
+  }) =>
     sqlite
       .prepare(
         `INSERT INTO projects (id, name, systemInstructions, files, createdAt, updatedAt)
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        row.id as string,
+        row.id,
         'Project',
-        (row.systemInstructions ?? '') as string,
-        JSON.stringify(row.files ?? []),
+        row.systemInstructions ?? null,
+        row.files === null ? null : JSON.stringify(row.files ?? []),
         T0,
         T0,
       );
@@ -234,6 +259,41 @@ describe('scheduler runner', () => {
       ).toEqual({
         chatModel: { providerId: 'anthropic', key: 'claude-sonnet' },
         embeddingModel: { providerId: 'anthropic', key: 'voyage-3' },
+      });
+    });
+
+    it('skips a provider that has no model list for the role at all', () => {
+      // Both columns have DEFAULTs but no NOT NULL, so a provider saved by an
+      // older build can be missing the list entirely.
+      doubles.getCurrentConfig.mockReturnValue({
+        modelProviders: [
+          { ...EMBEDDINGS_ONLY, chatModels: null },
+          ANTHROPIC,
+          OPENAI,
+        ],
+      });
+
+      // No stored refs, so both roles fall back to the first provider that has a
+      // list at all — skipping the one whose list is null.
+      expect(
+        resolveJobModels(job({ chatModel: null, embeddingModel: null })),
+      ).toEqual({
+        chatModel: { providerId: 'anthropic', key: 'claude-sonnet' },
+        embeddingModel: { providerId: 'embeddings-only', key: 'nomic-embed' },
+      });
+
+      // And a stored ref pointing AT that provider is not "configured" — the
+      // list it would have to be found in does not exist.
+      expect(
+        resolveJobModels(
+          job({
+            chatModel: { providerId: 'embeddings-only', key: 'claude-sonnet' },
+            embeddingModel: null,
+          }),
+        ),
+      ).toEqual({
+        chatModel: { providerId: 'anthropic', key: 'claude-sonnet' },
+        embeddingModel: { providerId: 'embeddings-only', key: 'nomic-embed' },
       });
     });
 
@@ -308,6 +368,13 @@ describe('scheduler runner', () => {
       expect(first).not.toBe(second);
     });
 
+    /**
+     * Project inheritance follows `job.projectId` and nothing else, unlike the
+     * chat route, which falls back to the CHAT row's `projectId`. The deviation
+     * is deliberate (a job whose project was reassigned must follow the job row),
+     * and the test pins the behaviour that comes with it: instructions trimmed,
+     * empty file ids dropped, missing values defaulted rather than fatal.
+     */
     it('passes the project instructions and files down', async () => {
       insertProject({
         id: 'proj-1',
@@ -337,6 +404,41 @@ describe('scheduler runner', () => {
       expect(agentInput().config.fileIds).toEqual([]);
     });
 
+    it('drops a file entry that carries no id', async () => {
+      insertProject({
+        id: 'proj-partial',
+        systemInstructions: 'Be brief.',
+        files: [
+          { fileId: 'file-1', name: 'notes.pdf' },
+          { fileId: '', name: 'unreadable.pdf' },
+          { fileId: 'file-2', name: 'data.csv' },
+        ],
+      });
+
+      const result = await runJobNow(job({ projectId: 'proj-partial' }));
+
+      expect(result).toEqual({ ok: true });
+      expect(agentInput().config.systemInstructions).toBe('Be brief.');
+      // An empty id would be sent to the agent as a file to search with.
+      expect(agentInput().config.fileIds).toEqual(['file-1', 'file-2']);
+    });
+
+    it('tolerates a project row with null instructions and null files', async () => {
+      // Both columns are nullable: a row written before they were populated
+      // reads back as null rather than as '' and [].
+      insertProject({
+        id: 'proj-legacy',
+        systemInstructions: null,
+        files: null,
+      });
+
+      const result = await runJobNow(job({ projectId: 'proj-legacy' }));
+
+      expect(result).toEqual({ ok: true });
+      expect(agentInput().config.systemInstructions).toBe('None');
+      expect(agentInput().config.fileIds).toEqual([]);
+    });
+
     it('runs without a project even when the id points at a deleted row', async () => {
       const result = await runJobNow(job({ projectId: 'gone' }));
 
@@ -360,6 +462,19 @@ describe('scheduler runner', () => {
 
       expect(result).toEqual({ ok: true });
       expect(agentInput().config.mode).toBe('balanced');
+    });
+
+    it('does not mistake an inherited object key for a mode', async () => {
+      // The mode set is a plain object, so `in` would accept `toString` and
+      // hand the agent a mode that does not exist.
+      for (const mode of ['toString', 'constructor', 'hasOwnProperty']) {
+        doubles.searchAsync.mockClear();
+
+        const result = await runJobNow(job({ optimizationMode: mode }));
+
+        expect(result).toEqual({ ok: true });
+        expect(agentInput().config.mode).toBe('balanced');
+      }
     });
 
     it('replaces a stored model that is no longer configured', async () => {
@@ -396,12 +511,46 @@ describe('scheduler runner', () => {
     });
 
     it('reports the failure when a model cannot be loaded', async () => {
-      doubles.loadChatModel.mockRejectedValue(new Error('Invalid provider id'));
+      doubles.chatModelResult = () =>
+        Promise.reject(new Error('Invalid provider id'));
 
       const result = await runJobNow(job());
 
       expect(result).toEqual({ ok: false, error: 'Invalid provider id' });
       expect(doubles.searchAsync).not.toHaveBeenCalled();
+    });
+
+    it('leaves no rejection unhandled when a sibling load throws synchronously', async () => {
+      // `Promise.all` attaches its handlers only after both array elements have
+      // been evaluated, so a synchronous throw from the second call can strand
+      // the first call's already-rejected promise: node would then raise
+      // `unhandledRejection` and take the server process down. The registry
+      // methods happen to be `async` today, which hides this.
+      doubles.chatModelResult = () =>
+        Promise.reject(new Error('chat load rejected'));
+      doubles.embeddingModelResult = () => {
+        throw new Error('embedding load threw');
+      };
+
+      const unhandled: unknown[] = [];
+      const collect = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', collect);
+
+      try {
+        const result = await runJobNow(job());
+
+        expect(result).toEqual({
+          ok: false,
+          error: 'embedding load threw',
+        });
+        expect(doubles.searchAsync).not.toHaveBeenCalled();
+
+        // Node reports a handler-less rejection on the next macrotask.
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', collect);
+      }
     });
 
     it('reports the failure when the agent rejects', async () => {
@@ -410,7 +559,8 @@ describe('scheduler runner', () => {
       const result = await runJobNow(job());
 
       expect(result).toEqual({ ok: false, error: 'disk is on fire' });
-      // The turn was attempted, so the caller still counts the run.
+      // The agent was reached, so the run itself happened; what the caller
+      // makes of that is its own decision.
       expect(doubles.searchAsync).toHaveBeenCalledTimes(1);
     });
 
