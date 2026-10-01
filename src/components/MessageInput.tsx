@@ -5,6 +5,7 @@ import TextareaAutosize from 'react-textarea-autosize';
 import AttachSmall from './MessageInputActions/AttachSmall';
 import ModelSelector from './MessageInputActions/ChatModelSelector';
 import Optimization from './MessageInputActions/Optimization';
+import Schedule from './MessageInputActions/Schedule';
 import VoiceRecorderButton from './VoiceRecorderButton';
 import { useChat } from '@/lib/hooks/useChat';
 
@@ -97,6 +98,7 @@ const MessageInput = () => {
               />
               <ModelSelector placement="top-start" />
               <Optimization placement="up" />
+              <Schedule message={message} />
             </div>
 
             {loading ? (

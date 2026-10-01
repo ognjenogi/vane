@@ -7,6 +7,7 @@ import Attach from './MessageInputActions/Attach';
 import VoiceRecorderButton from './VoiceRecorderButton';
 import { useChat } from '@/lib/hooks/useChat';
 import ModelSelector from './MessageInputActions/ChatModelSelector';
+import Schedule from './MessageInputActions/Schedule';
 
 const EmptyChatMessageInput = () => {
   const { sendMessage } = useChat();
@@ -71,6 +72,7 @@ const EmptyChatMessageInput = () => {
             <div className="flex flex-row items-center space-x-1">
               <Sources />
               <ModelSelector />
+              <Schedule message={message} />
               <Attach />
               <VoiceRecorderButton
                 onTranscribed={(text) => {

@@ -10,6 +10,7 @@ import {
   Plus,
   ArrowLeft,
   FolderKanban,
+  CalendarClock,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useSelectedLayoutSegments } from 'next/navigation';
@@ -55,6 +56,12 @@ const Sidebar = ({ children }: { children: React.ReactNode }) => {
       href: '/library',
       active: segments.includes('library'),
       label: 'Library',
+    },
+    {
+      icon: CalendarClock,
+      href: '/scheduled',
+      active: segments.includes('scheduled'),
+      label: 'Scheduled',
     },
   ];
 
