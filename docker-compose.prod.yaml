@@ -1,24 +1,32 @@
-version: "3.8"
+# Production compose for Vane — matches the actual deployment topology on the VPS
+# (verified against the live container, 2026-10-01).
+#
+# Notes:
+# - The database, config.json and uploads live in the host directory /opt/Vane/data
+#   (bind mount). There is deliberately NO named volume here: the old `vane-data`
+#   volume is a stale Sep-15 copy and is intentionally NOT mounted anywhere.
+# - SearXNG is started by the image's own entrypoint on localhost:8080 — it is not a
+#   separate service.
+# - The plain `Dockerfile` builds a broken image (its unpinned `yarn add playwright`
+#   step upgrades Next past the tested version and every route 500s);
+#   `Dockerfile.optimized` is the only supported build.
+# - No memory/CPU limits: the live container runs unlimited, matching how production
+#   has always run.
 services:
   vane:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.optimized
+    image: vane:main
+    container_name: vane
     ports:
       - "3000:3000"
     volumes:
-      - vane-data:/home/vane/data
+      - /opt/Vane/data:/home/vane/data
+      - /opt/Vane/data:/home/perplexica/data
     environment:
       - NODE_ENV=production
-      - SEARXNG_API_URL=http://searxng:8080
-    depends_on:
-      searxng:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          cpus: '3'
+      - SEARXNG_API_URL=http://localhost:8080
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000"]
@@ -26,30 +34,9 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - vane-net
-
-  searxng:
-    image: searxng/searxng:latest
-    volumes:
-      - ./searxng:/etc/searxng:rw
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '1'
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    networks:
-      - vane-net
-
-volumes:
-  vane-data:
-    external: true
+      - default
+      - shared-net
 
 networks:
-  vane-net:
-    driver: bridge
+  shared-net:
+    external: true
