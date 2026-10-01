@@ -136,4 +136,97 @@ describe('POST /api/chat', () => {
     // The query itself is untouched: only the clarification carries the answers.
     expect(agentInput.followUp).toBe('tell me about vane');
   });
+
+  /**
+   * A `questions` turn is the first kind of completed turn that legitimately
+   * has NO text, so the history entry a client builds for it is empty. That
+   * entry must not reach the agent: providers reject empty assistant content,
+   * and `formatHistory` renders one as a bare `AI:` in the classifier and
+   * clarifier prompts.
+   */
+  describe('history entries with no content', () => {
+    const historyTheAgentSaw = () => {
+      const [, agentInput] = doubles.searchAsync.mock.calls[0];
+      return agentInput.chatHistory;
+    };
+
+    it('drops an empty assistant entry', async () => {
+      const response = await post(
+        validBody({
+          history: [
+            ['human', 'first question'],
+            ['assistant', ''],
+            ['human', 'second question'],
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(historyTheAgentSaw()).toEqual([
+        { role: 'user', content: 'first question' },
+        { role: 'user', content: 'second question' },
+      ]);
+    });
+
+    it('drops an assistant entry that is only whitespace', async () => {
+      // A block that rendered as nothing still arrives as a string of breaks.
+      const response = await post(
+        validBody({
+          history: [
+            ['human', 'first question'],
+            ['assistant', '   \n\t '],
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(historyTheAgentSaw()).toEqual([
+        { role: 'user', content: 'first question' },
+      ]);
+    });
+
+    it('drops an empty human entry too', async () => {
+      const response = await post(
+        validBody({
+          history: [
+            ['human', ''],
+            ['assistant', 'a real answer'],
+          ],
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(historyTheAgentSaw()).toEqual([
+        { role: 'assistant', content: 'a real answer' },
+      ]);
+    });
+
+    it('leaves every non-empty entry exactly as it arrived', async () => {
+      // The other half: no over-filtering, and no rewriting. Content is not
+      // trimmed, so an answer that starts or ends with a space keeps it.
+      const history = [
+        ['human', '  leading and trailing  '],
+        ['assistant', 'The first answer.'],
+        ['human', 'And a follow-up?'],
+        ['assistant', 'Yes — here it is. '],
+      ] as [string, string][];
+
+      const response = await post(validBody({ history }));
+
+      expect(response.status).toBe(200);
+      expect(historyTheAgentSaw()).toEqual([
+        { role: 'user', content: '  leading and trailing  ' },
+        { role: 'assistant', content: 'The first answer.' },
+        { role: 'user', content: 'And a follow-up?' },
+        { role: 'assistant', content: 'Yes — here it is. ' },
+      ]);
+    });
+
+    it('leaves an all-empty history empty rather than inventing a turn', async () => {
+      const response = await post(validBody({ history: [['assistant', '']] }));
+
+      expect(response.status).toBe(200);
+      expect(historyTheAgentSaw()).toEqual([]);
+    });
+  });
 });

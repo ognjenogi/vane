@@ -62,6 +62,7 @@ describe('scheduler jobs API', () => {
   let job: JobRoute;
   let run: RunRoute;
   let Manager: ManagerClass;
+  let tick: typeof import('@/lib/scheduler/scheduler').tick;
   let consoleError: ReturnType<typeof vi.spyOn>;
   const originalDataDir = process.env.DATA_DIR;
 
@@ -92,6 +93,10 @@ describe('scheduler jobs API', () => {
     job = await import('@/app/api/scheduler/jobs/[id]/route');
     run = await import('@/app/api/scheduler/jobs/[id]/run/route');
     Manager = (await import('@/lib/scheduler/manager')).default;
+    // The real ticker, against the same temp database: the in-flight claim is
+    // module state shared by both dispatchers, so this file is the only place
+    // where "the run route" and "the ticker" can be held against each other.
+    tick = (await import('@/lib/scheduler/scheduler')).tick;
 
     // A second, read-only-by-convention handle so a test can assert on the rows
     // the routes wrote rather than only on what they echo back.
@@ -768,6 +773,170 @@ describe('scheduler jobs API', () => {
       await settle();
       // A run the user asked for must not silently resume the schedule.
       expect(jobRow(created.id)!.status).toBe('paused');
+    });
+
+    /**
+     * The end condition is checked BEFORE the dispatch here, not only after the
+     * run by `recordRunOutcome`. A paused job is runnable on this route, so a
+     * job that is already over its end condition still reads `active` and would
+     * otherwise buy one more full paid research turn.
+     */
+    describe('end conditions checked before dispatch', () => {
+      it('refuses a run for a date job past its runUntil and completes it instead', async () => {
+        const created = await create({
+          endType: 'date',
+          runUntil: new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(),
+        });
+        // Re-arming a date job against a PAST date is a legal PATCH, and the
+        // stored `nextRunAt` (an hour out) is now beyond it.
+        expect(
+          (
+            await patch(created.id, {
+              runUntil: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
+            })
+          ).status,
+        ).toBe(200);
+        expect(jobRow(created.id)!.status).toBe('active');
+
+        const response = await runNow(created.id);
+
+        expect(response.status).toBe(409);
+        expect((await response.json()).message).toBe(
+          'Scheduled job has reached its end condition',
+        );
+        // The money: no agent, so no paid turn.
+        expect(doubles.runJobNow).not.toHaveBeenCalled();
+        // And the job is over rather than still offering runs.
+        expect(jobRow(created.id)!.status).toBe('completed');
+        // Nothing ran, so nothing was counted.
+        expect(jobRow(created.id)!.runCount).toBe(0);
+      });
+
+      it('refuses a run for a count job already at its maxRuns and completes it instead', async () => {
+        const created = await create({ endType: 'count', maxRuns: 3 });
+        await runNow(created.id);
+        await settle();
+        expect(jobRow(created.id)!.runCount).toBe(1);
+        expect(jobRow(created.id)!.status).toBe('active');
+
+        // Lowering the cap to the runCount already reached is a legal PATCH.
+        expect((await patch(created.id, { maxRuns: 1 })).status).toBe(200);
+
+        const response = await runNow(created.id);
+
+        expect(response.status).toBe(409);
+        expect((await response.json()).message).toBe(
+          'Scheduled job has reached its end condition',
+        );
+        expect(doubles.runJobNow).toHaveBeenCalledTimes(1);
+        expect(jobRow(created.id)!.status).toBe('completed');
+        expect(jobRow(created.id)!.runCount).toBe(1);
+      });
+
+      it('still runs a job that is inside its end condition', async () => {
+        // The other half of the rule: a bounded job with a slot left is normal.
+        const dated = await create({
+          endType: 'date',
+          runUntil: new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(),
+        });
+        const counted = await create({ endType: 'count', maxRuns: 3 });
+
+        expect((await runNow(dated.id)).status).toBe(202);
+        expect((await runNow(counted.id)).status).toBe(202);
+
+        await settle();
+        expect(doubles.runJobNow).toHaveBeenCalledTimes(2);
+        expect(jobRow(dated.id)!.status).toBe('active');
+        expect(jobRow(counted.id)!.status).toBe('active');
+      });
+    });
+
+    /**
+     * The claim is shared with the ticker, so a second request for a job whose
+     * run is still going must be refused rather than paying for a second turn
+     * into the same chat. `JobCard` re-arms its button as soon as the 202 lands,
+     * ~10ms into a run that takes a minute, so this is one double-click away.
+     */
+    describe('the in-flight claim', () => {
+      it('starts exactly one run for two concurrent requests for the same job', async () => {
+        const created = await create();
+        const pending = deferred<{ ok: boolean }>();
+        doubles.runJobNow.mockReturnValue(pending.promise);
+
+        const [first, second] = await Promise.all([
+          runNow(created.id),
+          runNow(created.id),
+        ]);
+
+        const statuses = [first.status, second.status].sort();
+        expect(statuses).toEqual([202, 409]);
+        const conflict = first.status === 409 ? first : second;
+        expect((await conflict.json()).message).toBe(
+          'Scheduled job is already running',
+        );
+        // The money: one agent call, so one paid turn.
+        expect(doubles.runJobNow).toHaveBeenCalledTimes(1);
+
+        pending.resolve({ ok: true });
+        await settle();
+        // And one run counted, not two.
+        expect(jobRow(created.id)!.runCount).toBe(1);
+      });
+
+      it('releases the claim when the run settles, so the job is runnable again', async () => {
+        const created = await create();
+        const pending = deferred<{ ok: boolean }>();
+        doubles.runJobNow.mockReturnValue(pending.promise);
+
+        expect((await runNow(created.id)).status).toBe(202);
+        // Still in flight: the claim is what a second request trips over.
+        expect((await runNow(created.id)).status).toBe(409);
+        expect(doubles.runJobNow).toHaveBeenCalledTimes(1);
+
+        pending.resolve({ ok: true });
+        await settle();
+
+        expect((await runNow(created.id)).status).toBe(202);
+        expect(doubles.runJobNow).toHaveBeenCalledTimes(2);
+        await settle();
+        expect(jobRow(created.id)!.runCount).toBe(2);
+      });
+
+      it('releases the claim even when the run rejects outright', async () => {
+        const created = await create();
+        doubles.runJobNow.mockRejectedValue(new Error('run exploded'));
+
+        expect((await runNow(created.id)).status).toBe(202);
+        await settle();
+
+        doubles.runJobNow.mockResolvedValue({ ok: true });
+        expect((await runNow(created.id)).status).toBe(202);
+        expect(doubles.runJobNow).toHaveBeenCalledTimes(2);
+        await settle();
+      });
+
+      it('stops the ticker dispatching a job the run route already has in flight', async () => {
+        // The other direction, and the one the ticker cannot see for itself: a
+        // manual run in flight must stop the ticker starting a second turn.
+        const created = await create();
+        const pending = deferred<{ ok: boolean }>();
+        doubles.runJobNow.mockReturnValue(pending.promise);
+
+        expect((await runNow(created.id)).status).toBe(202);
+        // Make the job due so the ticker would otherwise dispatch it.
+        inspector
+          .prepare('UPDATE scheduled_jobs SET nextRunAt = ? WHERE id = ?')
+          .run(new Date(Date.now() - 1000).toISOString(), created.id);
+
+        await expect(tick()).resolves.toEqual({
+          ran: [],
+          pushed: [created.id],
+        });
+        expect(doubles.runJobNow).toHaveBeenCalledTimes(1);
+
+        pending.resolve({ ok: true });
+        await settle();
+      });
     });
   });
 });

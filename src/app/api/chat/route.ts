@@ -143,7 +143,7 @@ export const POST = async (req: Request) => {
     }
 
     console.log(
-      `[Chat API] Chat: ${body.message.chatId} | Model: ${body.chatModel.key} (${body.chatModel.providerId}) | Mode: ${body.optimizationMode}`
+      `[Chat API] Chat: ${body.message.chatId} | Model: ${body.chatModel.key} (${body.chatModel.providerId}) | Mode: ${body.optimizationMode}`,
     );
 
     const registry = new ModelRegistry();
@@ -156,19 +156,38 @@ export const POST = async (req: Request) => {
       ),
     ]);
 
-    const history: ChatTurnMessage[] = body.history.map((msg) => {
-      if (msg[0] === 'human') {
-        return {
-          role: 'user',
-          content: msg[1],
-        };
-      } else {
-        return {
-          role: 'assistant',
-          content: msg[1],
-        };
-      }
-    });
+    /**
+     * Entries whose content is empty (or only whitespace) are DROPPED.
+     *
+     * A client builds each entry from the answer it has, and an answer is not
+     * guaranteed to have text: a `questions` turn is the first kind of completed
+     * turn that legitimately carries no text at all, and the history entry built
+     * for it is then an empty string. Sending that is at best useless and at
+     * worst a hard failure — providers reject empty assistant content, and
+     * `formatHistory` renders it as a bare `AI:` in the classifier and clarifier
+     * prompts.
+     *
+     * Filtered HERE, on the server, rather than in one client: this is the last
+     * point before the history reaches the provider, so it defends the turn no
+     * matter what any client sends. Non-empty entries pass through UNCHANGED —
+     * content is never trimmed or rewritten, it is only tested with `trim()` —
+     * so a stored answer keeps its own leading and trailing whitespace.
+     */
+    const history: ChatTurnMessage[] = body.history
+      .filter((msg) => msg[1].trim() !== '')
+      .map((msg) => {
+        if (msg[0] === 'human') {
+          return {
+            role: 'user',
+            content: msg[1],
+          };
+        } else {
+          return {
+            role: 'assistant',
+            content: msg[1],
+          };
+        }
+      });
 
     const agent = new SearchAgent();
     const session = SessionManager.createSession();

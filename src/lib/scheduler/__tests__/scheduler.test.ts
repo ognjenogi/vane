@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { startScheduler, stopScheduler, tick } from '@/lib/scheduler/scheduler';
+import {
+  claimJob,
+  releaseJob,
+  startScheduler,
+  stopScheduler,
+  tick,
+} from '@/lib/scheduler/scheduler';
 import type { ScheduledJob } from '@/lib/scheduler/types';
 
 const doubles = vi.hoisted(() => ({
   listJobs: vi.fn(),
   recordRunOutcome: vi.fn(),
   pushNextRun: vi.fn(),
+  completeJob: vi.fn(),
   /**
    * Every job the ticker fired, as ids. A plain array rather than a spy on
    * `runJobNow`, because vitest attaches a rejection handler to any promise a
@@ -28,6 +35,7 @@ vi.mock('@/lib/scheduler/manager', () => ({
     listJobs = doubles.listJobs;
     recordRunOutcome = doubles.recordRunOutcome;
     pushNextRun = doubles.pushNextRun;
+    completeJob = doubles.completeJob;
   },
 }));
 
@@ -99,6 +107,7 @@ describe('scheduler ticker', () => {
     doubles.listJobs.mockResolvedValue([]);
     doubles.recordRunOutcome.mockResolvedValue(null);
     doubles.pushNextRun.mockResolvedValue(null);
+    doubles.completeJob.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -138,6 +147,100 @@ describe('scheduler ticker', () => {
     expect(doubles.runJobNowCalls).toEqual([]);
     expect(doubles.recordRunOutcome).not.toHaveBeenCalled();
     expect(doubles.pushNextRun).not.toHaveBeenCalled();
+  });
+
+  // The feature's binding rule is "end conditions checked before dispatch AND
+  // after each run". `recordRunOutcome` only covers the second half: without the
+  // check below, a job whose slot is due but which is already past its end
+  // condition buys one more FULL PAID research turn before completing.
+  describe('end conditions checked before dispatch', () => {
+    it('completes a date job whose runUntil has passed instead of firing one more run', async () => {
+      // The slot arrived while the process was down — and it is already past the
+      // end date, so the only thing left is to finish the job, not to pay for a
+      // research turn the user has already ruled out.
+      doubles.listJobs.mockResolvedValue([
+        job({
+          endType: 'date',
+          runUntil: '2026-01-01T00:20:00.000Z',
+          nextRunAt: '2026-01-01T00:30:00.000Z',
+        }),
+      ]);
+
+      await expect(tick()).resolves.toEqual({ ran: [], pushed: [] });
+
+      // No run, and no booking either: nothing was spent.
+      await settle();
+      expect(doubles.runJobNowCalls).toEqual([]);
+      expect(doubles.recordRunOutcome).not.toHaveBeenCalled();
+      expect(doubles.completeJob).toHaveBeenCalledTimes(1);
+      expect(doubles.completeJob).toHaveBeenCalledWith('job-1');
+      // The slot is not pushed either — there is no future run to schedule.
+      expect(doubles.pushNextRun).not.toHaveBeenCalled();
+    });
+
+    it('completes a count job already at its maxRuns instead of firing one more run', async () => {
+      // A PATCH to `{ endType: 'count', maxRuns: 1 }` on a job at runCount 9 is
+      // a legal 200; the pre-dispatch check is what keeps it from running.
+      doubles.listJobs.mockResolvedValue([
+        job({ endType: 'count', maxRuns: 1, runCount: 9, nextRunAt: NOW }),
+      ]);
+
+      await expect(tick()).resolves.toEqual({ ran: [], pushed: [] });
+
+      await settle();
+      expect(doubles.runJobNowCalls).toEqual([]);
+      expect(doubles.recordRunOutcome).not.toHaveBeenCalled();
+      expect(doubles.completeJob).toHaveBeenCalledWith('job-1');
+    });
+
+    it('still fires a job that is inside its end condition', async () => {
+      // The other half: a bounded job with a slot left is a normal run.
+      doubles.listJobs.mockResolvedValue([
+        // One run still to come before the date.
+        job({
+          id: 'date-ok',
+          endType: 'date',
+          runUntil: '2026-06-01T00:00:00.000Z',
+          nextRunAt: NOW,
+        }),
+        // One run under its cap.
+        job({
+          id: 'count-ok',
+          endType: 'count',
+          maxRuns: 2,
+          runCount: 1,
+          nextRunAt: NOW,
+        }),
+      ]);
+
+      await expect(tick()).resolves.toEqual({
+        ran: ['date-ok', 'count-ok'],
+        pushed: [],
+      });
+
+      await settle();
+      expect(doubles.runJobNowCalls).toEqual(['date-ok', 'count-ok']);
+      expect(doubles.completeJob).not.toHaveBeenCalled();
+      // Neither was counted as finished: they still have a run each in them.
+      expect(doubles.recordRunOutcome).toHaveBeenCalledTimes(2);
+    });
+
+    it('survives a completion that fails, and leaves the job dispatchable next tick', async () => {
+      doubles.listJobs.mockResolvedValue([
+        job({ endType: 'count', maxRuns: 1, runCount: 1, nextRunAt: NOW }),
+      ]);
+      doubles.completeJob.mockRejectedValue(new Error('write failed'));
+
+      // Nothing awaits a tick in production: it must resolve, never reject.
+      await expect(tick()).resolves.toEqual({ ran: [], pushed: [] });
+      expect(consoleError).toHaveBeenCalled();
+
+      // The job is still due and still over its end, so the next tick tries
+      // again rather than the completion being silently lost for good.
+      await expect(tick()).resolves.toEqual({ ran: [], pushed: [] });
+      expect(doubles.completeJob).toHaveBeenCalledTimes(2);
+      expect(doubles.runJobNowCalls).toEqual([]);
+    });
   });
 
   it('pushes the slot of a job whose run is still going instead of firing it twice', async () => {
@@ -196,6 +299,35 @@ describe('scheduler ticker', () => {
     // With the job dispatchable again, the next tick fires it normally.
     await expect(tick()).resolves.toEqual({ ran: ['job-1'], pushed: [] });
     expect(doubles.runJobNowCalls).toEqual(['job-1', 'job-1']);
+  });
+
+  // The claim is what the manual run route takes too, so "already running" means
+  // one thing to both dispatchers: a run in flight from EITHER one must stop the
+  // other starting a second paid turn into the same chat.
+  describe('the in-flight claim', () => {
+    it('refuses a second claim and accepts one again after release', () => {
+      expect(claimJob('shared')).toBe(true);
+      expect(claimJob('shared')).toBe(false);
+
+      releaseJob('shared');
+      expect(claimJob('shared')).toBe(true);
+      releaseJob('shared');
+      // Releasing an id nobody holds must not throw.
+      expect(() => releaseJob('never-claimed')).not.toThrow();
+    });
+
+    it('does not dispatch a job the manual run route already has in flight', async () => {
+      // A run started by `POST .../run` has claimed this id.
+      expect(claimJob('job-1')).toBe(true);
+      doubles.listJobs.mockResolvedValue([job()]);
+
+      await expect(tick()).resolves.toEqual({ ran: [], pushed: ['job-1'] });
+
+      await settle();
+      expect(doubles.runJobNowCalls).toEqual([]);
+      expect(doubles.pushNextRun).toHaveBeenCalledWith('job-1');
+      releaseJob('job-1');
+    });
   });
 
   it('runs one interval however many times it is started, and stopScheduler clears it', async () => {

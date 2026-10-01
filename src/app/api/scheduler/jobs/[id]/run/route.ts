@@ -1,5 +1,7 @@
 import SchedulerManager from '@/lib/scheduler/manager';
 import { runJobNow } from '@/lib/scheduler/runner';
+import { claimJob, releaseJob } from '@/lib/scheduler/scheduler';
+import { evaluateEnd } from '@/lib/scheduler/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,6 +33,41 @@ export const POST = async (
     }
 
     /**
+     * The end condition, checked BEFORE the dispatch — not only afterwards by
+     * `recordRunOutcome` — and not left to the stored `status` alone.
+     *
+     * A paused job is runnable here on request, so a `date` job the user paused
+     * (or which the server missed) past its `runUntil`, and a `count` job
+     * PATCHed to a `maxRuns` at or below the `runCount` it already has, both
+     * reach this route still reading `active`. Running either would spend a
+     * full PAID research turn on a job that is already over, so it is completed
+     * without a run and the request is refused.
+     */
+    if (
+      job.nextRunAt !== null &&
+      evaluateEnd(job, job.nextRunAt) === 'completed'
+    ) {
+      await manager.completeJob(job.id);
+
+      return Response.json(
+        { message: 'Scheduled job has reached its end condition' },
+        { status: 409 },
+      );
+    }
+
+    /**
+     * The ticker's in-flight guard, taken by BOTH dispatchers so "already
+     * running" means one thing: a double-clicked "Run now", or the same job open
+     * in two tabs, must not start two paid turns into the same chat.
+     */
+    if (!claimJob(job.id)) {
+      return Response.json(
+        { message: 'Scheduled job is already running' },
+        { status: 409 },
+      );
+    }
+
+    /**
      * Deliberately NOT awaited.
      *
      * One run is a whole research turn — a minute or more — and this route has
@@ -49,10 +86,11 @@ export const POST = async (
      *
      * Note this is NOT the ticker's shape. `scheduler.ts` chains
      * `void run(job).finally(...).catch(...)`, where the `finally` has to run
-     * before the `catch` can be the last handler on the chain. Here there is
-     * nothing to clean up per job, so the inner catch is the whole mechanism —
-     * keep it that way if this body grows: anything added AFTER the try must go
-     * inside it, or it needs its own handler.
+     * before the `catch` can be the last handler on the chain. Here the claim
+     * taken above is the only per-job cleanup, so the inner `finally` plus the
+     * inner catch is the whole mechanism — keep it that way if this body grows:
+     * anything added AFTER the try must go inside it, or it needs its own
+     * handler.
      *
      * A job the user paused may still be run on request; `recordRunOutcome`
      * keeps the pause (it only completes a job that reached its end condition).
@@ -63,6 +101,10 @@ export const POST = async (
         await manager.recordRunOutcome(job.id, result);
       } catch (err) {
         console.error(`Scheduler: manual run of job ${job.id} failed`, err);
+      } finally {
+        // However the run ended — resolved, rejected, or thrown — the claim goes
+        // back, so the job stays runnable.
+        releaseJob(job.id);
       }
     })();
 

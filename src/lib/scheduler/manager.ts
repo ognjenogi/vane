@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import db from '@/lib/db';
 import { chats, scheduledJobs } from '@/lib/db/schema';
 import {
@@ -177,6 +177,15 @@ class SchedulerManager {
    * this job finished?", not "should it run again?". Completion is terminal and
    * wins; otherwise a job that was paused stays paused instead of silently
    * resuming.
+   *
+   * The increment is ATOMIC IN SQL (`runCount + 1`) rather than read here and
+   * written back. Two callers can report at the same instant — the ticker and
+   * the manual run route, or two of the latter — and a read-modify-write would
+   * let both write the same number and lose one: a `count: 2` job that has
+   * really run three times, or never completes. `evaluateEnd` still reads a job
+   * it fetched here, so the count it judges can be one behind the row under a
+   * genuine overlap; the pre-dispatch check in the dispatchers then completes
+   * the job on the NEXT tick instead of paying for another turn.
    */
   async recordRunOutcome(
     id: string,
@@ -195,7 +204,7 @@ class SchedulerManager {
     await this.db
       .update(scheduledJobs)
       .set({
-        runCount: finished.runCount,
+        runCount: sql`${scheduledJobs.runCount} + 1`,
         lastRunAt: now.toISOString(),
         nextRunAt,
         lastError: result.ok ? null : (result.error ?? null),
@@ -207,6 +216,29 @@ class SchedulerManager {
               : 'active',
         updatedAt: now.toISOString(),
       })
+      .where(eq(scheduledJobs.id, id))
+      .run();
+
+    return this.getJob(id);
+  }
+
+  /**
+   * Marks a job completed WITHOUT counting a run.
+   *
+   * The dispatchers evaluate the end condition before every dispatch, and a job
+   * that fails it must still end up `completed` rather than keep being offered
+   * a run that is not going to happen — that is what stops a `date` job whose
+   * date has passed, or a `count` job PATCHed down to the runCount it already
+   * has, from buying another full research turn. Nothing ran, so `runCount`,
+   * `lastRunAt` and `nextRunAt` are deliberately left exactly as they are.
+   */
+  async completeJob(id: string): Promise<ScheduledJob | null> {
+    const job = await this.getJob(id);
+    if (!job) return null;
+
+    await this.db
+      .update(scheduledJobs)
+      .set({ status: 'completed', updatedAt: new Date().toISOString() })
       .where(eq(scheduledJobs.id, id))
       .run();
 

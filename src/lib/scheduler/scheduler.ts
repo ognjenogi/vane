@@ -1,6 +1,6 @@
 import SchedulerManager from './manager';
 import { runJobNow } from './runner';
-import { isJobDue, type ScheduledJob } from './types';
+import { evaluateEnd, isJobDue, type ScheduledJob } from './types';
 
 /** How often the ticker looks for jobs that have come due. */
 const TICK_INTERVAL_MS = 30_000;
@@ -16,8 +16,32 @@ const manager = new SchedulerManager();
  * one interval out instead, and the run already in flight reports its own
  * outcome when it lands. Without this, a job slower than the interval would
  * queue a new run on every tick and pile up without limit.
+ *
+ * The SAME set is the manual run route's guard (`claimJob`), because "already
+ * running" has to mean the same thing to both dispatchers: a double-clicked
+ * "Run now", or the same job open in two tabs of `/scheduled`, is the same
+ * hazard as a slow tick, and only one run of it may ever be paid for.
  */
 const running = new Set<string>();
+
+/**
+ * Claims a job for one run, for either dispatcher. `false` means a run is
+ * already in flight, and the caller must not start one.
+ *
+ * Release with `releaseJob` in a `finally`, so a run that rejects, throws, or
+ * never settles cannot strand the id — a stranded id would stop that job from
+ * ever running again.
+ */
+export const claimJob = (id: string): boolean => {
+  if (running.has(id)) return false;
+  running.add(id);
+  return true;
+};
+
+/** Releases a claim taken by `claimJob`. Releasing an unclaimed id is a no-op. */
+export const releaseJob = (id: string): void => {
+  running.delete(id);
+};
 
 /**
  * Awaits one bookkeeping call, turning any failure into a log line. Both
@@ -57,6 +81,9 @@ const run = async (job: ScheduledJob): Promise<void> => {
  * contract, because the tests drive it directly — `startScheduler` only ever
  * calls it in the background.
  *
+ * A job that is due but already past its end condition appears in NEITHER list:
+ * it was completed without a run, which spends nothing.
+ *
  * Restart catch-up needs nothing here: `startScheduler`'s immediate first tick
  * finds any job whose slot passed while the process was down, fires it once,
  * and the run that lands records its own outcome and reschedules from there.
@@ -80,7 +107,26 @@ export const tick = async (): Promise<{ ran: string[]; pushed: string[] }> => {
   for (const job of jobs) {
     if (!isJobDue(job, now)) continue;
 
-    if (running.has(job.id)) {
+    /**
+     * The end condition, checked BEFORE the dispatch as the feature's rule
+     * requires, not only afterwards by `recordRunOutcome`.
+     *
+     * A due slot can already be past a job's end: a `date` job the server was
+     * down (or the user had paused) across its `runUntil`, or a `count` job
+     * PATCHed to a `maxRuns` at or below the `runCount` it already has. Both
+     * are one tick away from a full PAID research turn that the user did not
+     * intend and the job must never perform — so it is completed here, without
+     * a run, and no turn is dispatched.
+     */
+    if (
+      job.nextRunAt !== null &&
+      evaluateEnd(job, job.nextRunAt) === 'completed'
+    ) {
+      await attempt(`complete ${job.id}`, () => manager.completeJob(job.id));
+      continue;
+    }
+
+    if (!claimJob(job.id)) {
       // Awaited, unlike a run: pushing a slot is one row write, and this job
       // cannot fire on this pass either way. Waiting for it keeps the returned
       // `pushed` list honest — the schedule really has moved by the time `tick`
@@ -92,7 +138,6 @@ export const tick = async (): Promise<{ ran: string[]; pushed: string[] }> => {
       continue;
     }
 
-    running.add(job.id);
     ran.push(job.id);
     // Deliberately NOT awaited: each run is a full research turn, and awaiting
     // one before starting the next would serialize the whole queue behind the
@@ -103,7 +148,7 @@ export const tick = async (): Promise<{ ran: string[]; pushed: string[] }> => {
       // `catch` on the tail of the chain is the last handler — nothing is left
       // holding a rejected promise that has none.
       .finally(() => {
-        running.delete(job.id);
+        releaseJob(job.id);
       })
       .catch((err) => {
         console.error(`Scheduler: job ${job.id} failed`, err);

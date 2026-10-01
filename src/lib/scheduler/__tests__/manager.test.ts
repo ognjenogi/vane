@@ -578,6 +578,70 @@ describe('SchedulerManager', () => {
     it('returns null for an unknown id', async () => {
       expect(await manager.recordRunOutcome('nope', { ok: true })).toBeNull();
     });
+
+    /**
+     * The increment has to be atomic IN SQL. A read-modify-write loses one count
+     * whenever two outcomes report together — which the ticker and a manual
+     * "Run now" can do — and the loss is invisible until the job runs one time
+     * too many, or never completes at all.
+     */
+    it('counts every outcome even when two are reported at the same time', async () => {
+      const job = await manager.createJob(
+        parse(minimal({ endType: 'count', maxRuns: 5 })),
+      );
+
+      vi.setSystemTime(at(1));
+      await Promise.all([
+        manager.recordRunOutcome(job.id, { ok: true }),
+        manager.recordRunOutcome(job.id, { ok: true }),
+      ]);
+
+      expect((await manager.getJob(job.id))!.runCount).toBe(2);
+      expect(jobRow(job.id)!.runCount).toBe(2);
+    });
+  });
+
+  describe('completeJob', () => {
+    it('marks a job completed without counting a run or moving its schedule', async () => {
+      const job = await manager.createJob(
+        parse(minimal({ endType: 'date', runUntil: at(60).toISOString() })),
+      );
+      vi.setSystemTime(at(180));
+
+      const completed = await manager.completeJob(job.id);
+
+      expect(completed!.status).toBe('completed');
+      // Nothing ran, so none of the run bookkeeping may claim otherwise.
+      expect(completed!.runCount).toBe(0);
+      expect(completed!.lastRunAt).toBeNull();
+      expect(completed!.nextRunAt).toBe(job.nextRunAt);
+      expect(completed!.updatedAt).toBe(at(180).toISOString());
+      expect(jobRow(job.id)!.status).toBe('completed');
+      expect(jobRow(job.id)!.runCount).toBe(0);
+      expect(jobRow(job.id)!.nextRunAt).toBe(job.nextRunAt);
+      // Terminal: the job is not dispatchable any more.
+      expect(isJobDue(completed!, new Date())).toBe(false);
+    });
+
+    it('completes a paused job too, and returns it unchanged otherwise', async () => {
+      const job = await manager.createJob(parse(minimal()));
+      await manager.updateJob(job.id, { status: 'paused' });
+      vi.setSystemTime(at(5));
+
+      const completed = await manager.completeJob(job.id);
+
+      expect(completed!.status).toBe('completed');
+      expect(completed!.title).toBe(job.title);
+      expect(completed!.prompt).toBe(job.prompt);
+      expect(jobRow(job.id)!.status).toBe('completed');
+    });
+
+    it('returns null for an unknown id and creates nothing', async () => {
+      await manager.createJob(parse(minimal()));
+
+      expect(await manager.completeJob('nope')).toBeNull();
+      expect(count('scheduled_jobs')).toBe(1);
+    });
   });
 
   describe('pushNextRun', () => {

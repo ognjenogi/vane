@@ -26,7 +26,8 @@ type JobPatch = Partial<CreateJobInput> & { status?: 'active' | 'paused' };
  * `src/lib/scheduler/__tests__/logic.test.ts`.
  *
  * `status` is layered on separately because it belongs to the update, not to the
- * create: `completed` is terminal and only `recordRunOutcome` may set it.
+ * create: `completed` is terminal, and only the manager's own bookkeeping
+ * (`recordRunOutcome`, `completeJob`) may set it.
  */
 const patchJobSchema = z
   .object(createJobSchema.shape)
