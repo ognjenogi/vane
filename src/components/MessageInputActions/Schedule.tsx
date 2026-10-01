@@ -17,12 +17,27 @@ interface ScheduleProps {
  */
 const Schedule = ({ message }: ScheduleProps) => {
   const [isOpen, setIsOpen] = useState(false);
+  /**
+   * Bumped on every open, so the modal remounts and re-seeds.
+   *
+   * `CreateJobModal` seeds its form ONCE per mount, from `initialPrompt`. This
+   * component is mounted with the chat page's first render — before anything
+   * has been typed — so without a remount the form kept the empty prompt from
+   * that first render and every scheduled job lost what the user typed. Same
+   * reason `JobsView` keys its modal the same way.
+   */
+  const [modalKey, setModalKey] = useState(0);
+
+  const open = () => {
+    setModalKey((key) => key + 1);
+    setIsOpen(true);
+  };
 
   return (
     <>
       <button
         type="button"
-        onClick={() => setIsOpen(true)}
+        onClick={open}
         title="Repeat this prompt on a schedule"
         aria-label="Schedule this prompt"
         className={cn(
@@ -35,6 +50,7 @@ const Schedule = ({ message }: ScheduleProps) => {
       </button>
 
       <CreateJobModal
+        key={modalKey}
         open={isOpen}
         onClose={() => setIsOpen(false)}
         initialPrompt={message}

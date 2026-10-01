@@ -384,6 +384,65 @@ describe('CreateJobModal', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 
+  it('saves an edit that leaves an already-past end date untouched', async () => {
+    const onCreated = vi.fn();
+    // `evaluateEnd` completes such a job on its next run, but until then it is
+    // still an ordinary active `date` job and editing its title must work.
+    const job = jobResponse({
+      endType: 'date',
+      runUntil: '2020-01-01T00:00:00.000Z',
+    });
+
+    render(
+      <CreateJobModal
+        open={true}
+        onClose={vi.fn()}
+        onCreated={onCreated}
+        job={job}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Title (optional)'), {
+      target: { value: 'Renamed' },
+    });
+    fireEvent.click(editSubmit());
+
+    const call = jobsCall('/api/scheduler/jobs/job-1', 'PATCH');
+    expect(call).toBeDefined();
+    // The date is not in the patch, so the PATCH route's non-null guard is
+    // satisfied by the stored value and this is not judged against the clock.
+    expect(bodyOf(call!)).toEqual({ title: 'Renamed' });
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('blocks an edit that sets an end date in the past', () => {
+    const job = jobResponse({
+      endType: 'date',
+      runUntil: minuteAlignedISO(30),
+    });
+
+    render(
+      <CreateJobModal
+        open={true}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        job={job}
+      />,
+    );
+
+    // One day back, in the local wall-clock time the control takes.
+    fireEvent.change(screen.getByLabelText('End date'), {
+      target: { value: localDateTimeInput(-1) },
+    });
+    fireEvent.click(editSubmit());
+
+    expect(jobsCall('/api/scheduler/jobs/job-1', 'PATCH')).toBeUndefined();
+    expect(
+      screen.getByText(/choose an end date in the future/i),
+    ).toBeInTheDocument();
+  });
+
   it('never sends runUntil: null when a date job is switched to forever', async () => {
     const job = jobResponse({
       endType: 'date',

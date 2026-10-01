@@ -83,6 +83,9 @@ beforeEach(() => {
     if (url === '/api/scheduler/jobs/job-1' && options?.method === 'PATCH') {
       return jsonResponse({ job: job() });
     }
+    if (url === '/api/scheduler/jobs/job-1' && options?.method === 'DELETE') {
+      return jsonResponse({}, 204);
+    }
     return jsonResponse({});
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -223,5 +226,35 @@ describe('JobCard', () => {
     expect(onEdit).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'job-1' }),
     );
+  });
+
+  it('deletes nothing when the confirmation is cancelled', async () => {
+    // jsdom's `confirm` is a no-op, so it has to be answered explicitly.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { onChanged } = renderCard();
+
+    fireEvent.click(screen.getByRole('button', { name: /delete schedule/i }));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    expect(callFor('/api/scheduler/jobs/job-1')).toBeUndefined();
+    expect(onChanged).not.toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
+  });
+
+  it('deletes the job once the confirmation is accepted', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { onChanged } = renderCard();
+
+    fireEvent.click(screen.getByRole('button', { name: /delete schedule/i }));
+
+    await waitFor(() =>
+      expect(callFor('/api/scheduler/jobs/job-1')).toBeDefined(),
+    );
+    const call = callFor('/api/scheduler/jobs/job-1')!;
+    expect((call[1] as { method: string }).method).toBe('DELETE');
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+
+    confirmSpy.mockRestore();
   });
 });

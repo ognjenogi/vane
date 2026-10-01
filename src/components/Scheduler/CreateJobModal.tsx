@@ -284,6 +284,25 @@ const CreateJobModal = ({
     e.preventDefault();
     setApiErrors([]);
 
+    /**
+     * Whether the end date in the form is one the user is actually setting,
+     * as opposed to the one already stored on the job.
+     *
+     * `createJobSchema` requires a future `runUntil` and the PATCH route does
+     * not check the clock at all — and it cannot: a `date` job whose date has
+     * passed is still an ordinary active job until its next run completes it,
+     * so an edit that merely renames it must not be blocked on a date the user
+     * never touched. Without a stored job — the create path — every date is
+     * being set, so the check always applies.
+     */
+    const isSettingTheEndDate = (): boolean => {
+      if (!job) return true;
+      if (form.endType !== 'date') return false;
+      if (job.endType !== 'date') return true;
+
+      return form.runUntilLocal !== toLocalInputValue(job.runUntil);
+    };
+
     const prompt = form.prompt.trim();
     const title = form.title.trim();
     const errors: Record<string, string> = {};
@@ -315,9 +334,7 @@ const CreateJobModal = ({
 
       if (!form.runUntilLocal || Number.isNaN(until)) {
         errors.end = 'Choose an end date.';
-      } else if (until <= Date.now()) {
-        // The create schema rejects a past `runUntil`; a `date` job whose date
-        // has already gone completes on its next run rather than extending.
+      } else if (isSettingTheEndDate() && until <= Date.now()) {
         errors.end = 'Choose an end date in the future.';
       }
     }
