@@ -27,6 +27,11 @@ services:
     environment:
       - NODE_ENV=production
       - SEARXNG_API_URL=http://localhost:8080
+      # Docker injects HOSTNAME=<container-id> into every container; Next standalone
+      # binds to it (server.js: `process.env.HOSTNAME || '0.0.0.0'`), which resolves
+      # to the container's eth0 IP and leaves 127.0.0.1 with no listener — so any
+      # in-container healthcheck (curl localhost:3000) fails. Pin it explicitly.
+      - HOSTNAME=0.0.0.0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000"]
