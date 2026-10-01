@@ -19,6 +19,7 @@ import * as schema from '@/lib/db/schema';
 import SessionManager from '@/lib/session';
 import { resolveJobModels, runJobNow } from '@/lib/scheduler/runner';
 import type { ScheduledJob } from '@/lib/scheduler/types';
+import type { MinimalProvider } from '@/lib/models/types';
 import {
   betterSqliteMockFactory,
   closeTrackedDatabases,
@@ -37,6 +38,23 @@ const doubles = vi.hoisted(() => ({
    */
   chatModelResult: (() => Promise.resolve(undefined)) as () => unknown,
   embeddingModelResult: (() => Promise.resolve(undefined)) as () => unknown,
+  /**
+   * The live provider list, from `ModelRegistry.getActiveProviders()` — the same
+   * call `GET /api/providers` serves, and therefore the same list the creation
+   * form offered the models from. Plain function, for the reason above: a spy
+   * would swallow the rejection
+   * `reports the failure when the live provider list cannot be fetched` is
+   * about.
+   */
+  activeProvidersResult: (() => Promise.resolve([])) as () => unknown,
+  getActiveProviders: vi.fn(),
+  /**
+   * `data/config.json`, which the runner used to read its model lists from and
+   * no longer does. Kept so the tests can still shape it: the production shape
+   * is a config file whose `embeddingModels` arrays are EMPTY while the live
+   * list has the models, and `runs when config.json lists no embedding models
+   * but the live provider list does` has to hold with exactly that.
+   */
   getCurrentConfig: vi.fn(),
   /**
    * `@/lib/db` opens `<DATA_DIR>/data/db.sqlite` at import time, and the runner
@@ -56,10 +74,15 @@ vi.mock('@/lib/agents/search', () => ({
 /**
  * The registry only hands back model handles here; no provider is ever
  * constructed, so no key or endpoint is needed. A test can also make either
- * method throw synchronously, or return an already rejected promise.
+ * method throw synchronously, return an already rejected promise, or make the
+ * live provider list itself fail.
  */
 vi.mock('@/lib/models/registry', () => ({
   default: class ModelRegistry {
+    getActiveProviders = (...args: unknown[]) => {
+      doubles.getActiveProviders(...args);
+      return doubles.activeProvidersResult();
+    };
     loadChatModel = (...args: unknown[]) => {
       doubles.loadChatModel(...args);
       return doubles.chatModelResult();
@@ -71,6 +94,12 @@ vi.mock('@/lib/models/registry', () => ({
   },
 }));
 
+/**
+ * Only kept for the tests that describe what the runner must NOT read any more.
+ * Nothing in the runner imports it after the live-list fix, and the point of
+ * holding it here is to prove that: a config file with empty `embeddingModels`
+ * no longer stops a run.
+ */
 vi.mock('@/lib/config', () => ({
   default: { getCurrentConfig: doubles.getCurrentConfig },
 }));
@@ -108,6 +137,7 @@ const MIGRATIONS_DIR = path.join(process.cwd(), 'drizzle');
 const LLM = { fake: 'chat model' };
 const EMBEDDING = { fake: 'embedding model' };
 
+/** A `data/config.json` entry: what the runner used to resolve models from. */
 const provider = (
   id: string,
   chatModels: string[],
@@ -122,11 +152,52 @@ const provider = (
   hash: `${id}-hash`,
 });
 
+/**
+ * One entry of `ModelRegistry.getActiveProviders()` — a `MinimalProvider`: the
+ * model lists the provider was willing to report RIGHT NOW, which is what
+ * `GET /api/providers` serves and what the creation form built the stored refs
+ * out of. `config.json` carries no such thing.
+ */
+const live = (
+  id: string,
+  chatModels: string[],
+  embeddingModels: string[],
+): MinimalProvider => ({
+  id,
+  name: id,
+  chatModels: chatModels.map((key) => ({ key, name: key })),
+  embeddingModels: embeddingModels.map((key) => ({ key, name: key })),
+});
+
+/**
+ * What the registry substitutes for a provider whose model list it could not
+ * fetch (`src/lib/models/registry.ts`): one `key: 'error'` entry standing in for
+ * the chat list and nothing at all for embedding. A ref to it would be sent to
+ * the provider as a model named `error`.
+ */
+const UNFETCHABLE = (
+  id: string,
+  message = '401 Unauthorized',
+): MinimalProvider => ({
+  id,
+  name: id,
+  chatModels: [{ key: 'error', name: message }],
+  embeddingModels: [],
+});
+
+/** Live entries. */
+const LIVE_ANTHROPIC = live('anthropic', ['claude-sonnet'], ['voyage-3']);
+const LIVE_OPENAI = live('openai', ['gpt-4o', 'gpt-4o-mini'], ['embed-3']);
+
+/** A live provider with an embedding model only: it cannot serve the chat role. */
+const LIVE_EMBEDDINGS_ONLY = live('embeddings-only', [], ['nomic-embed']);
+
+/** What the provider list reports unless a test says otherwise. */
+const LIVE_DEFAULT = [LIVE_ANTHROPIC, LIVE_OPENAI];
+
+/** `data/config.json` entries. */
 const OPENAI = provider('openai', ['gpt-4o', 'gpt-4o-mini'], ['embed-3']);
 const ANTHROPIC = provider('anthropic', ['claude-sonnet'], ['voyage-3']);
-
-/** A provider with an embedding model only: it cannot serve the chat role. */
-const EMBEDDINGS_ONLY = provider('embeddings-only', [], ['nomic-embed']);
 
 const T0 = '2026-01-01T00:00:00.000Z';
 
@@ -186,6 +257,10 @@ describe('scheduler runner', () => {
     doubles.chatModelResult = () => Promise.resolve(LLM);
     doubles.embeddingModelResult = () => Promise.resolve(EMBEDDING);
     doubles.searchAsync.mockResolvedValue(undefined);
+    doubles.activeProvidersResult = () => Promise.resolve(LIVE_DEFAULT);
+    // The list the runner must not read any more, still carrying the same two
+    // providers — so a test that sets only ONE of the two sources cannot pass by
+    // accident.
     doubles.getCurrentConfig.mockReturnValue({
       modelProviders: [ANTHROPIC, OPENAI],
     });
@@ -226,24 +301,42 @@ describe('scheduler runner', () => {
   const agentSession = () => doubles.searchAsync.mock.calls[0][0];
 
   describe('resolveJobModels', () => {
-    it('keeps stored refs that are still configured', () => {
-      expect(resolveJobModels(job())).toEqual({
+    /**
+     * Resolves the way `runJobNow` does: against a live provider list, the only
+     * source of candidates there is now.
+     */
+    const resolve = (
+      overrides: Partial<ScheduledJob> = {},
+      providers: MinimalProvider[] = LIVE_DEFAULT,
+    ) => resolveJobModels(job(overrides), providers);
+
+    it('keeps stored refs that the live list still offers', async () => {
+      // `config.json` here offers NOTHING the job stores — no `openai` at all.
+      // A runner that read the file would discard both stored refs and fall back
+      // to `stale`, so this pins that the LIVE list is what decides.
+      doubles.getCurrentConfig.mockReturnValue({
+        modelProviders: [provider('stale', ['other-chat'], ['other-embed'])],
+      });
+
+      expect(await resolve()).toEqual({
         chatModel: { providerId: 'openai', key: 'gpt-4o' },
         embeddingModel: { providerId: 'openai', key: 'embed-3' },
       });
     });
 
-    it('falls back per role when a stored ref is no longer configured', () => {
-      doubles.getCurrentConfig.mockReturnValue({
-        modelProviders: [EMBEDDINGS_ONLY, ANTHROPIC, OPENAI],
-      });
+    it('falls back per role when a stored ref is not in the live list', async () => {
+      // The mirror image: both stored refs DO resolve against `config.json`, so a
+      // runner that read the file would keep them and never reach the live list
+      // at all.
+      doubles.getCurrentConfig.mockReturnValue({ modelProviders: [OPENAI] });
 
       expect(
-        resolveJobModels(
-          job({
+        await resolve(
+          {
             chatModel: { providerId: 'removed-provider', key: 'gpt-4o' },
             embeddingModel: { providerId: 'openai', key: 'removed-model' },
-          }),
+          },
+          [LIVE_EMBEDDINGS_ONLY, LIVE_ANTHROPIC, LIVE_OPENAI],
         ),
       ).toEqual({
         // The first provider has no chat models at all, so the chat role skips it.
@@ -253,30 +346,29 @@ describe('scheduler runner', () => {
       });
     });
 
-    it('falls back when the job stores no model at all', () => {
-      expect(
-        resolveJobModels(job({ chatModel: null, embeddingModel: null })),
-      ).toEqual({
+    it('falls back when the job stores no model at all', async () => {
+      expect(await resolve({ chatModel: null, embeddingModel: null })).toEqual({
         chatModel: { providerId: 'anthropic', key: 'claude-sonnet' },
         embeddingModel: { providerId: 'anthropic', key: 'voyage-3' },
       });
     });
 
-    it('skips a provider that has no model list for the role at all', () => {
-      // Both columns have DEFAULTs but no NOT NULL, so a provider saved by an
-      // older build can be missing the list entirely.
-      doubles.getCurrentConfig.mockReturnValue({
-        modelProviders: [
-          { ...EMBEDDINGS_ONLY, chatModels: null },
-          ANTHROPIC,
-          OPENAI,
-        ],
-      });
+    it('skips a provider that has no model list for the role at all', async () => {
+      // A list built by an older build, or a hand-edited one, can be missing
+      // altogether rather than empty.
+      const missing = {
+        ...LIVE_EMBEDDINGS_ONLY,
+        chatModels: null,
+      } as unknown as MinimalProvider;
 
       // No stored refs, so both roles fall back to the first provider that has a
       // list at all — skipping the one whose list is null.
       expect(
-        resolveJobModels(job({ chatModel: null, embeddingModel: null })),
+        await resolve({ chatModel: null, embeddingModel: null }, [
+          missing,
+          LIVE_ANTHROPIC,
+          LIVE_OPENAI,
+        ]),
       ).toEqual({
         chatModel: { providerId: 'anthropic', key: 'claude-sonnet' },
         embeddingModel: { providerId: 'embeddings-only', key: 'nomic-embed' },
@@ -285,11 +377,12 @@ describe('scheduler runner', () => {
       // And a stored ref pointing AT that provider is not "configured" — the
       // list it would have to be found in does not exist.
       expect(
-        resolveJobModels(
-          job({
+        await resolve(
+          {
             chatModel: { providerId: 'embeddings-only', key: 'claude-sonnet' },
             embeddingModel: null,
-          }),
+          },
+          [missing, LIVE_ANTHROPIC, LIVE_OPENAI],
         ),
       ).toEqual({
         chatModel: { providerId: 'anthropic', key: 'claude-sonnet' },
@@ -297,28 +390,69 @@ describe('scheduler runner', () => {
       });
     });
 
-    it('throws a clear error when no provider offers a chat model', () => {
-      doubles.getCurrentConfig.mockReturnValue({
-        modelProviders: [EMBEDDINGS_ONLY],
-      });
-
-      expect(() => resolveJobModels(job())).toThrow('No chat model configured');
-    });
-
-    it('throws a clear error when no provider offers an embedding model', () => {
-      doubles.getCurrentConfig.mockReturnValue({
-        modelProviders: [provider('chat-only', ['gpt-4o'], [])],
-      });
-
-      expect(() => resolveJobModels(job())).toThrow(
-        'No embedding model configured',
+    it('throws a clear error when no provider offers a chat model', async () => {
+      await expect(resolve({}, [LIVE_EMBEDDINGS_ONLY])).rejects.toThrow(
+        'No chat model configured',
       );
     });
 
-    it('treats a config without providers as nothing configured', () => {
-      doubles.getCurrentConfig.mockReturnValue({});
+    it('throws a clear error when no provider offers an embedding model', async () => {
+      await expect(
+        resolve({}, [live('chat-only', ['gpt-4o'], [])]),
+      ).rejects.toThrow('No embedding model configured');
+    });
 
-      expect(() => resolveJobModels(job())).toThrow('No chat model configured');
+    it('treats no providers at all as nothing configured', async () => {
+      // Resolved chat first, so an empty list reports the chat role.
+      await expect(resolve({}, [])).rejects.toThrow('No chat model configured');
+    });
+
+    it('skips a provider whose only model is the fetch-error placeholder', async () => {
+      // `GET /api/providers` filters these providers out before the UI ever sees
+      // them, so nothing downstream can hold a ref to the `error` key. Handed to
+      // the registry it would be a model literally named `error`.
+      expect(
+        await resolve({ chatModel: null, embeddingModel: null }, [
+          UNFETCHABLE('gemini'),
+          LIVE_OPENAI,
+        ]),
+      ).toEqual({
+        chatModel: { providerId: 'openai', key: 'gpt-4o' },
+        embeddingModel: { providerId: 'openai', key: 'embed-3' },
+      });
+    });
+
+    it('does not count the error placeholder as a configured stored ref', async () => {
+      expect(
+        await resolve(
+          {
+            chatModel: { providerId: 'gemini', key: 'error' },
+            embeddingModel: null,
+          },
+          [UNFETCHABLE('gemini'), LIVE_OPENAI],
+        ),
+      ).toEqual({
+        chatModel: { providerId: 'openai', key: 'gpt-4o' },
+        embeddingModel: { providerId: 'openai', key: 'embed-3' },
+      });
+    });
+
+    it('reports no chat model when every live entry is a fetch-error placeholder', async () => {
+      await expect(
+        resolve({}, [UNFETCHABLE('gemini'), UNFETCHABLE('cohere')]),
+      ).rejects.toThrow('No chat model configured');
+    });
+
+    it('reports no embedding model when only error entries would serve the role', async () => {
+      // The chat role resolves first and does succeed here, so the embedding role
+      // is what fails — a provider whose embedding list holds nothing usable is
+      // skipped exactly like one whose list is empty.
+      await expect(
+        resolve({}, [
+          UNFETCHABLE('gemini'),
+          live('chat-only', ['gpt-4o'], ['error']),
+        ]),
+      ).rejects.toThrow('No embedding model configured');
     });
   });
 
@@ -477,11 +611,7 @@ describe('scheduler runner', () => {
       }
     });
 
-    it('replaces a stored model that is no longer configured', async () => {
-      doubles.getCurrentConfig.mockReturnValue({
-        modelProviders: [ANTHROPIC, OPENAI],
-      });
-
+    it('replaces a stored model the live list no longer offers', async () => {
       const result = await runJobNow(
         job({
           chatModel: { providerId: 'removed-provider', key: 'gpt-4o' },
@@ -501,13 +631,81 @@ describe('scheduler runner', () => {
       expect(agentInput().config.llm).toBe(LLM);
     });
 
-    it('reports the failure and skips the run when no model is configured', async () => {
-      doubles.getCurrentConfig.mockReturnValue({ modelProviders: [] });
+    it('reports the failure and skips the run when the live list is empty', async () => {
+      doubles.activeProvidersResult = () => Promise.resolve([]);
 
       const result = await runJobNow(job());
 
       expect(result).toEqual({ ok: false, error: 'No chat model configured' });
       expect(doubles.searchAsync).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The production shape that shipped this broken: `data/config.json` on the
+     * server carries EMPTY `embeddingModels` arrays, so the runner rejected its
+     * own stored refs as unconfigured, then found nothing to fall back to, then
+     * failed every tick with `No embedding model configured` — while the models
+     * were there all along in what the providers actually report.
+     */
+    it('runs when config.json lists no embedding models but the live list does', async () => {
+      doubles.getCurrentConfig.mockReturnValue({
+        modelProviders: [provider('openai', ['gpt-4o'], [])],
+      });
+      doubles.activeProvidersResult = () => Promise.resolve([LIVE_OPENAI]);
+
+      const result = await runJobNow(job());
+
+      expect(result).toEqual({ ok: true });
+      expect(doubles.loadChatModel).toHaveBeenCalledWith('openai', 'gpt-4o');
+      expect(doubles.loadEmbeddingModel).toHaveBeenCalledWith(
+        'openai',
+        'embed-3',
+      );
+      expect(doubles.searchAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves the live provider list once per run', async () => {
+      // `getActiveProviders()` asks every provider for its model list, so a
+      // second call per run is a second round of network requests for an answer
+      // already in hand.
+      await runJobNow(job());
+      expect(doubles.getActiveProviders).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports the failure when the live provider list cannot be fetched', async () => {
+      doubles.activeProvidersResult = () =>
+        Promise.reject(new Error('registry is on fire'));
+
+      const result = await runJobNow(job());
+
+      expect(result).toEqual({ ok: false, error: 'registry is on fire' });
+      expect(doubles.searchAsync).not.toHaveBeenCalled();
+    });
+
+    it('leaves no rejection unhandled when fetching the live list fails', async () => {
+      // `getActiveProviders()` catches per provider, so the whole call rejecting
+      // is not expected — but `runJobNow` runs from a ticker with nothing
+      // awaiting it, where an escaping rejection is node's `unhandledRejection`
+      // and takes the server process down.
+      doubles.activeProvidersResult = () =>
+        Promise.reject(new Error('registry is on fire'));
+
+      const unhandled: unknown[] = [];
+      const collect = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', collect);
+
+      try {
+        expect(await runJobNow(job())).toEqual({
+          ok: false,
+          error: 'registry is on fire',
+        });
+
+        // Node reports a handler-less rejection on the next macrotask.
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', collect);
+      }
     });
 
     it('reports the failure when a model cannot be loaded', async () => {

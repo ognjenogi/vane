@@ -8,8 +8,7 @@ import type {
   SearchAgentInput,
 } from '@/lib/agents/search/types';
 import ModelRegistry from '@/lib/models/registry';
-import configManager from '@/lib/config';
-import type { ConfigModelProvider } from '@/lib/config/types';
+import type { MinimalProvider, Model } from '@/lib/models/types';
 import SessionManager from '@/lib/session';
 import type { ModelRef, ScheduledJob } from './types';
 
@@ -17,67 +16,113 @@ import type { ModelRef, ScheduledJob } from './types';
 type ModelRole = 'chatModels' | 'embeddingModels';
 
 /**
- * What one run reports to whoever fired it: whether the turn happened, and why
+ * One entry of `ModelRegistry.getActiveProviders()` — what a configured provider
+ * reports about itself RIGHT NOW, by being asked, shaped as a `MinimalProvider`.
+ * This is the same list `GET /api/providers` serves, which is why every stored
+ * ref names something in it: the creation form offered models from there.
+ *
+ * Deliberately NOT `configManager.getCurrentConfig().modelProviders`. The file is
+ * written when a provider is added and its `embeddingModels` arrays are routinely
+ * left empty, so resolving against it rejected stored refs the user had picked
+ * from the live list, found no fallback either, and failed every scheduled run
+ * with `No embedding model configured` on a server whose providers were healthy.
+ */
+type LiveProvider = MinimalProvider;
+
+/**
+ * The key `ModelRegistry` substitutes for a model it could not fetch — a
+ * placeholder carrying the provider's error message as its name, not a model.
+ * `GET /api/providers` filters out any provider whose chat list holds one, so
+ * nothing the UI offers can name it; nothing the runner picks may either.
+ */
+const ERROR_MODEL_KEY = 'error';
+
+/**
+ * What to report to whoever fired a run: whether the turn happened, and why
  * not if it did not. What to record or schedule off that is the caller's call.
  */
 export type JobRunResult = { ok: boolean; error?: string };
 
-const configuredProviders = (): ConfigModelProvider[] =>
-  configManager.getCurrentConfig().modelProviders ?? [];
+/**
+ * The models of one list a job could actually be run with. A list the provider
+ * never filled in — missing entirely, or only ever the fetch-error placeholder —
+ * contributes nothing, which is what makes such a provider invisible both to the
+ * stored-ref check and to the fallback.
+ */
+const usable = (provider: LiveProvider, role: ModelRole): Model[] =>
+  (provider[role] ?? []).filter((model) => model.key !== ERROR_MODEL_KEY);
 
 /**
- * Whether a stored ref still points at a model that exists. A provider can be
- * removed, or a model dropped from it, while a job row keeps its old ref, and
- * the registry would then answer "Invalid provider id" for every run.
+ * Whether a stored ref still points at a model the provider reports right now. A
+ * provider can be removed, or a model dropped from it, while a job row keeps its
+ * old ref, and the registry would then answer "Invalid provider id" (or refuse
+ * the key) for every run. Both halves matter: matching the provider alone would
+ * accept any key that provider has ever had.
  */
-const isConfigured = (
-  provider: ConfigModelProvider,
+const isAvailable = (
+  provider: LiveProvider,
   role: ModelRole,
   ref: ModelRef,
 ): boolean =>
   provider.id === ref.providerId &&
-  (provider[role] ?? []).some((model) => model.key === ref.key);
+  usable(provider, role).some((model) => model.key === ref.key);
 
 /**
- * One model role: the job's own ref when it is still configured, otherwise the
- * first model of the first provider that offers one. Throws when nothing is
- * configured, which the caller reports as a failed run rather than a crash.
+ * One model role: the job's own ref when the live list still offers it,
+ * otherwise the first usable model of the first provider that has one. Throws
+ * when nothing offers one, which the caller reports as a failed run rather than
+ * a crash.
+ *
+ * Roles are decided independently and in the order given: the chat model is
+ * resolved before the embedding one, so an installation with neither reports the
+ * chat role rather than both at once.
  */
 const resolveModel = (
   stored: ModelRef | null,
+  providers: LiveProvider[],
   role: ModelRole,
   label: 'chat' | 'embedding',
 ): ModelRef => {
-  const providers = configuredProviders();
-
   if (
     stored &&
-    providers.some((provider) => isConfigured(provider, role, stored))
+    providers.some((provider) => isAvailable(provider, role, stored))
   ) {
     return stored;
   }
 
-  const fallback = providers.find(
-    (provider) => (provider[role] ?? []).length > 0,
-  );
-  const model = fallback?.[role][0];
-  if (!model) throw new Error(`No ${label} model configured`);
+  for (const provider of providers) {
+    const [first] = usable(provider, role);
+    if (first) return { providerId: provider.id, key: first.key };
+  }
 
-  return { providerId: fallback.id, key: model.key };
+  throw new Error(`No ${label} model configured`);
 };
 
 /**
  * The models a job runs with, resolved at run time rather than stored: the
- * stored refs are a preference, and this is the only thing that knows what is
- * configured right now. Throws `No chat model configured` /
- * `No embedding model configured` when a role has nothing to fall back to.
+ * stored refs are a preference, and the caller's live provider list is the only
+ * thing that knows what is configured right now. Throws
+ * `No chat model configured` / `No embedding model configured` when a role has
+ * nothing to fall back to.
+ *
+ * The provider list is a PARAMETER, not a fetch here, so that one run costs one
+ * `getActiveProviders()` call — a network round per provider — however many
+ * roles it has to resolve. The list is fetched by `runJobNow`, which owns the
+ * single call, and reused by the two loads that follow.
+ *
+ * `async` although nothing is awaited in here: resolution is now part of a chain
+ * that ends in a run rather than a pure query, and a promise-returning signature
+ * is the honest one for the only caller — `runJobNow`, which must never throw out
+ * of it.
  */
-export const resolveJobModels = (
+export const resolveJobModels = async (
   job: ScheduledJob,
-): { chatModel: ModelRef; embeddingModel: ModelRef } => ({
-  chatModel: resolveModel(job.chatModel, 'chatModels', 'chat'),
+  providers: LiveProvider[],
+): Promise<{ chatModel: ModelRef; embeddingModel: ModelRef }> => ({
+  chatModel: resolveModel(job.chatModel, providers, 'chatModels', 'chat'),
   embeddingModel: resolveModel(
     job.embeddingModel,
+    providers,
     'embeddingModels',
     'embedding',
   ),
@@ -139,17 +184,37 @@ const describeError = (err: unknown): string => {
  * function NEVER rejects, and it never leaves a rejection unhandled. A job
  * scheduled to fire on a timer runs with nothing awaiting it, where an unhandled
  * rejection would take the whole process down rather than fail one job. So every
- * failure — a model that cannot be resolved, a provider that refuses the key, an
- * agent that throws before it catches anything itself — comes back as
- * `{ ok: false, error }`.
+ * failure — a provider list that cannot be fetched, a model that cannot be
+ * resolved, a provider that refuses the key, an agent that throws before it
+ * catches anything itself — comes back as `{ ok: false, error }`.
  */
 export const runJobNow = async (job: ScheduledJob): Promise<JobRunResult> => {
   try {
-    const { chatModel, embeddingModel } = resolveJobModels(job);
-
     // A registry per run, as the chat route builds one per request: providers
     // can be added or removed between two ticks.
     const registry = new ModelRegistry();
+
+    /**
+     * `getActiveProviders()` is awaited inside the `try` above, and a registry
+     * catches a provider's failure itself, so neither an outright rejection nor
+     * the throw it can raise is expected here. Both are inside this `try` anyway,
+     * because the contract this function exists to keep is that it never
+     * rejects: the background ticker fires a run with nothing awaiting it, where
+     * an escaping rejection is node's `unhandledRejection` and a dead server
+     * process. So a list that cannot be fetched is a failed run
+     * (`{ ok: false, error }`), exactly like a model that cannot be loaded.
+     *
+     * Fetched ONCE and passed down: it asks every provider for its model list,
+     * so asking again per role would be a second round of network requests for
+     * an answer already in hand.
+     */
+    const providers = await registry.getActiveProviders();
+
+    const { chatModel, embeddingModel } = await resolveJobModels(
+      job,
+      providers,
+    );
+
     // Both loads in flight at once, but each wrapped: `Promise.all` attaches its
     // handlers only after it has evaluated BOTH array elements, so a synchronous
     // throw from the second call would strand the first call's already rejected
