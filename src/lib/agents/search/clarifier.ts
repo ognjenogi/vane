@@ -31,7 +31,10 @@ export type ClarifierInput = {
  */
 export const clarify = async (
   input: ClarifierInput,
-  timeoutMs: number = 6000,
+  // Reasoning models are slow but healthy: glm-5.3 takes 9-11s for this
+  // request, so a tighter bound made the questions silently disappear. The
+  // timeout is here to cap a *hang*, not to police normal latency.
+  timeoutMs: number = 20000,
 ): Promise<string[]> => {
   let timeout: ReturnType<typeof setTimeout> | undefined;
 

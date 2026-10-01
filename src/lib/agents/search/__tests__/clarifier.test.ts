@@ -117,6 +117,33 @@ describe('clarify', () => {
     await expect(call(llmHanging())).resolves.toEqual([]);
   });
 
+  it('lets a slow but healthy model finish on the default timeout', async () => {
+    // glm-5.3 was measured at 9-11s for this request. With the old 6s default
+    // it was always killed, so the feature silently never appeared; fake timers
+    // keep that case instant here.
+    vi.useFakeTimers();
+
+    try {
+      const questions = ['Which versions should I compare?'];
+      const slowLlm = {
+        generateObject: vi.fn(
+          () =>
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ questions }), 11_000),
+            ),
+        ),
+      } as unknown as BaseLLM<any>;
+
+      // No explicit timeoutMs: this pins the default, not a caller-supplied one.
+      const pending = clarify({ query: QUERY, chatHistory, llm: slowLlm });
+      await vi.advanceTimersByTimeAsync(11_000);
+
+      await expect(pending).resolves.toEqual(questions);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('drops non-string and blank questions instead of passing them on', async () => {
     // A provider returns unvalidated parsed JSON on a schema failure, and
     // Task 7 renders these — an object child would crash React.
