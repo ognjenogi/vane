@@ -46,8 +46,37 @@ class SessionManager {
     }, this.TTL_MS);
   }
 
+  chatId?: string;
+  messageId?: string;
+
   static getSession(id: string): SessionManager | undefined {
     return this.sessions.get(id);
+  }
+
+  static findSession(query: {
+    sessionId?: string;
+    chatId?: string;
+    messageId?: string;
+  }): SessionManager | undefined {
+    if (query.sessionId) {
+      const s = this.sessions.get(query.sessionId);
+      if (s) return s;
+    }
+    if (query.chatId && query.messageId) {
+      for (const s of this.sessions.values()) {
+        if (s.chatId === query.chatId && s.messageId === query.messageId) {
+          return s;
+        }
+      }
+    }
+    if (query.chatId) {
+      for (const s of this.sessions.values()) {
+        if (s.chatId === query.chatId && !s.isAborted()) {
+          return s;
+        }
+      }
+    }
+    return undefined;
   }
 
   static getAllSessions(): SessionManager[] {

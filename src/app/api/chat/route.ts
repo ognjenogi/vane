@@ -191,6 +191,8 @@ export const POST = async (req: Request) => {
 
     const agent = new SearchAgent();
     const session = SessionManager.createSession();
+    session.chatId = body.message.chatId;
+    session.messageId = body.message.messageId;
 
     const responseStream = new TransformStream();
     const writer = responseStream.writable.getWriter();
@@ -237,11 +239,9 @@ export const POST = async (req: Request) => {
       } else if (event === 'end') {
         write({ type: 'messageEnd' });
         closeStream();
-        session.removeAllListeners();
       } else if (event === 'error') {
         write({ type: 'error', data: data.data });
         closeStream();
-        session.removeAllListeners();
       }
     });
 
@@ -308,7 +308,6 @@ export const POST = async (req: Request) => {
     });
 
     req.signal.addEventListener('abort', () => {
-      session.abort();
       closeStream();
     });
 

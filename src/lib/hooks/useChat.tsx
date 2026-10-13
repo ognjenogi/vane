@@ -370,8 +370,30 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
   const messagesRef = useRef<Message[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  const isReconnectingRef = useRef(false);
+  const handledMessageEndRef = useRef<Set<string>>(new Set());
+  const serverSessionIdsRef = useRef<Record<string, string>>({});
 
   const stopGeneration = () => {
+    const answeringMsg = messagesRef.current.find(
+      (msg) => msg.status === 'answering',
+    );
+
+    if (answeringMsg) {
+      const sessionId = serverSessionIdsRef.current[answeringMsg.messageId];
+      fetch('/api/chat/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          chatId: answeringMsg.chatId || chatId,
+          messageId: answeringMsg.messageId,
+        }),
+      }).catch((err) => {
+        console.warn('Failed to send abort request to server:', err);
+      });
+    }
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -481,10 +503,6 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
     });
   }, [messages]);
 
-  const isReconnectingRef = useRef(false);
-  const handledMessageEndRef = useRef<Set<string>>(new Set());
-  const serverSessionIdsRef = useRef<Record<string, string>>({});
-
   const checkReconnect = async () => {
     if (isReconnectingRef.current) return;
 
@@ -509,6 +527,64 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
       }
     }
   };
+
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible' && chatId) {
+        const activeMsg = messagesRef.current.find(
+          (m) => m.status === 'answering',
+        );
+        if (activeMsg) {
+          try {
+            const checkRes = await fetch(`/api/chats/${chatId}`);
+            if (checkRes.ok) {
+              const checkData = await checkRes.json();
+              const dbMsg = checkData.messages?.find(
+                (m: any) => m.messageId === activeMsg.messageId,
+              );
+              if (
+                dbMsg &&
+                dbMsg.status === 'completed' &&
+                dbMsg.responseBlocks?.length > 0
+              ) {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.messageId === activeMsg.messageId
+                      ? {
+                          ...msg,
+                          status: 'completed' as const,
+                          responseBlocks: dbMsg.responseBlocks,
+                        }
+                      : msg,
+                  ),
+                );
+                setResearchEnded(true);
+                setMessageAppeared(true);
+                setLoading(false);
+                return;
+              }
+            }
+          } catch (err) {
+            console.warn('Visibility change sync check failed:', err);
+          }
+
+          if (!activeReaderRef.current && !isReconnectingRef.current) {
+            isReconnectingRef.current = true;
+            try {
+              await recoverStream(activeMsg);
+            } finally {
+              isReconnectingRef.current = false;
+            }
+          }
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [chatId]);
 
   useEffect(() => {
     checkConfig(
@@ -974,6 +1050,40 @@ export const ChatProvider = ({ children }: { children: React.ReactNode }) => {
 
     if (abortControllerRef.current?.signal.aborted) {
       return;
+    }
+
+    // Before giving up, check if the server finished processing in the background and saved to db
+    try {
+      const checkRes = await fetch(`/api/chats/${message.chatId}`);
+      if (checkRes.ok) {
+        const checkData = await checkRes.json();
+        const dbMsg = checkData.messages?.find(
+          (m: any) => m.messageId === message.messageId,
+        );
+        if (
+          dbMsg &&
+          dbMsg.status === 'completed' &&
+          dbMsg.responseBlocks?.length > 0
+        ) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.messageId === message.messageId
+                ? {
+                    ...msg,
+                    status: 'completed' as const,
+                    responseBlocks: dbMsg.responseBlocks,
+                  }
+                : msg,
+            ),
+          );
+          setResearchEnded(true);
+          setMessageAppeared(true);
+          setLoading(false);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to check db for completed message:', e);
     }
 
     setMessages((prev) =>
